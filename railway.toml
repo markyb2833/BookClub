@@ -1,0 +1,14 @@
+# Railway config-as-code: https://docs.railway.com/guides/config-as-code
+# Set the service **Root Directory** to this folder (`app/`) in the Railway UI if the repo root is BookClub/.
+
+[build]
+builder = "nixpacks"
+# Prisma client must exist before `next build` imports it.
+buildCommand = "npm ci && npx prisma generate && npm run build"
+
+[deploy]
+# Runs with production env (DATABASE_URL, etc.) before the new release goes live.
+releaseCommand = "npx prisma migrate deploy"
+startCommand = "npm run start"
+healthcheckPath = "/api/health"
+restartPolicyType = "ON_FAILURE"

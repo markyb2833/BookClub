@@ -1,26 +1,59 @@
 @import "tailwindcss";
 
+@variant dark (&:is(.dark *));
+
+/* CSS variable defaults (overridden by ThemeProvider at runtime) */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --border: #e7e5e4;
+  --muted: #a8a29e;
+  --accent: #8b5cf6;
+  --text: #1c1917;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+main {
+  background: var(--bg);
+}
+
+/* Public profile — book cover strip (avoid client handlers on server components) */
+.profile-shelf-cover-inner {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.profile-shelf-cover-link:hover .profile-shelf-cover-inner {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+}
+
+/* Shelf scene: text selection steals mousedown and breaks native HTML5 drag on spines */
+.shelf-scene-canvas,
+.shelf-scene-canvas * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.shelf-scene-canvas .shelf-book-spine {
+  -webkit-user-drag: element;
+}
+
+@keyframes shelf-fairy-twinkle {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.86);
+    filter: brightness(0.88);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+    filter: brightness(1.4);
+  }
+}
+
+.shelf-fairy-bulb {
+  animation: shelf-fairy-twinkle 2.5s ease-in-out infinite;
 }

@@ -1,0 +1,950 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserTier {
+  reader
+  bookworm
+  critic
+  ambassador
+  founding_member
+}
+
+enum EmailDigest {
+  never
+  daily
+  weekly
+}
+
+enum EditionFormat {
+  hardcover
+  paperback
+  ebook
+  audiobook
+  other
+}
+
+enum ClubMemberRole {
+  owner
+  moderator
+  member
+}
+
+enum NotificationType {
+  review_liked
+  review_commented
+  new_follower
+  club_post
+  club_schedule
+  streak_reminder
+  tier_upgrade
+  collection_liked
+}
+
+enum ActivityType {
+  finished_book
+  started_book
+  wrote_review
+  created_collection
+  joined_club
+  followed_user
+}
+
+enum BadgeType {
+  founding_member
+  bookworm
+  critic
+  ambassador
+  speed_reader
+  genre_expert
+  club_leader
+  century_reader
+}
+
+// ---------------------------------------------------------------------------
+// Users & Auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id                String    @id @default(uuid())
+  username          String    @unique @db.VarChar(30)
+  email             String    @unique @db.VarChar(255)
+  passwordHash      String    @map("password_hash")
+  displayName       String?   @map("display_name") @db.VarChar(100)
+  bio               String?   @db.Text
+  avatarUrl         String?   @map("avatar_url")
+  websiteUrl        String?   @map("website_url")
+  location          String?   @db.VarChar(100)
+  tier              UserTier  @default(reader)
+  tierScore         Float     @default(0) @map("tier_score")
+  isAdmin           Boolean   @default(false) @map("is_admin")
+  usernameChangedAt DateTime? @map("username_changed_at")
+  joinedAt          DateTime  @default(now()) @map("joined_at")
+  lastActiveAt      DateTime? @map("last_active_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  settings          UserSettings?
+  shelves           Shelf[]
+  readingSessions   ReadingSession[]
+  reviews                        Review[]
+  reviewVotes                    ReviewVote[]
+  reviewComments                 ReviewComment[]
+  reviewCommentVotes             ReviewCommentVote[]
+  bookRecommendations            BookRecommendation[]
+  bookRecommendationVotes        BookRecommendationVote[]
+  bookRecommendationComments   BookRecommendationComment[]
+  bookRecommendationCommentVotes BookRecommendationCommentVote[]
+  feedPosts              FeedPost[]
+  feedPostVotes          FeedPostVote[]
+  feedPostComments       FeedPostComment[]
+  feedPostCommentVotes   FeedPostCommentVote[]
+  collections       Collection[]
+  collectionLikes   CollectionLike[]
+  collectionFollows CollectionFollow[]
+  following         Follow[]           @relation("Follower")
+  followers         Follow[]           @relation("Following")
+  clubMemberships   ClubMember[]
+  clubPosts         ClubPost[]
+  clubPostReplies   ClubPostReply[]
+  notifications     Notification[]
+  sentMessages      Message[]          @relation("Sender")
+  receivedMessages  Message[]          @relation("Recipient")
+  tierScoreRecord   UserTierScore?
+  badges            UserBadge[]
+  feedEntries       ActivityFeed[]     @relation("FeedOwner")
+  feedActivities    ActivityFeed[]     @relation("FeedActor")
+  blocksCreated      UserBlock[]        @relation("Blocker")
+  blocksReceived     UserBlock[]        @relation("Blocked")
+  groupChatsCreated  GroupChat[]        @relation("GroupChatsCreated")
+  groupMemberships   GroupMember[]      @relation("GroupMemberships")
+  groupMessagesSent  GroupMessage[]     @relation("GroupMessagesSent")
+
+  @@map("users")
+}
+
+model GroupChat {
+  id          String   @id @default(uuid())
+  name        String   @db.VarChar(100)
+  createdById String   @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  creator  User           @relation("GroupChatsCreated", fields: [createdById], references: [id], onDelete: Cascade)
+  members  GroupMember[]
+  messages GroupMessage[]
+
+  @@map("group_chats")
+}
+
+model GroupMember {
+  groupId     String    @map("group_id")
+  userId      String    @map("user_id")
+  joinedAt    DateTime  @default(now()) @map("joined_at")
+  lastReadAt  DateTime? @map("last_read_at")
+
+  group GroupChat @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User      @relation("GroupMemberships", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  @@index([userId])
+  @@map("group_members")
+}
+
+model GroupMessage {
+  id        String   @id @default(uuid())
+  groupId   String   @map("group_id")
+  senderId  String   @map("sender_id")
+  body      String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+
+  group  GroupChat @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  sender User      @relation("GroupMessagesSent", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, createdAt])
+  @@map("group_messages")
+}
+
+model UserBlock {
+  id        String   @id @default(uuid())
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("user_blocks")
+}
+
+model UserSettings {
+  id             String      @id @default(uuid())
+  userId         String      @unique @map("user_id")
+  notifyLikes    Boolean     @default(true) @map("notify_likes")
+  notifyFollows  Boolean     @default(true) @map("notify_follows")
+  notifyComments Boolean     @default(true) @map("notify_comments")
+  notifyClub     Boolean     @default(true) @map("notify_club")
+  notifyStreak   Boolean     @default(true) @map("notify_streak")
+  notifySchedule Boolean     @default(true) @map("notify_schedule")
+  emailDigest    EmailDigest @default(weekly) @map("email_digest")
+  profilePublic  Boolean     @default(true) @map("profile_public")
+  shelvesPublic  Boolean     @default(true) @map("shelves_public")
+  readingPublic  Boolean     @default(true) @map("reading_public")
+  theme          String      @default("light")
+  accentColour   String      @default("#8b5cf6") @map("accent_colour")
+  textColour     String      @default("#1c1917") @map("text_colour")
+  /** Library page grid: 1–4 columns × 1–3 rows; `libraryWallSlots` row-major shelf ids. */
+  libraryWallCols  Int       @default(2) @map("library_wall_cols")
+  libraryWallRows  Int       @default(2) @map("library_wall_rows")
+  libraryWallSlots Json?     @map("library_wall_slots")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+model Follow {
+  id          String   @id @default(uuid())
+  followerId  String   @map("follower_id")
+  followingId String   @map("following_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  follower    User     @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@map("follows")
+}
+
+// ---------------------------------------------------------------------------
+// Books
+// ---------------------------------------------------------------------------
+
+model Work {
+  id             String   @id @default(uuid())
+  openLibraryId  String?  @unique @map("open_library_id") @db.VarChar(20)
+  title          String   @db.VarChar(500)
+  subtitle       String?  @db.VarChar(500)
+  description    String?  @db.Text
+  coverUrl       String?  @map("cover_url")
+  firstPublished Int?     @map("first_published")
+  averageRating  Float    @default(0) @map("average_rating")
+  ratingsCount   Int      @default(0) @map("ratings_count")
+  reviewsCount   Int      @default(0) @map("reviews_count")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  editions        Edition[]
+  workAuthors     WorkAuthor[]
+  workGenres      WorkGenre[]
+  shelfBooks      ShelfBook[]
+  readingSessions ReadingSession[]
+  reviews                      Review[]
+  bookRecommendationsAsTarget  BookRecommendation[] @relation("RecommendationTarget")
+  bookRecommendationsAsContext BookRecommendation[] @relation("RecommendationContext")
+  collectionBooks              CollectionBook[]
+  clubSchedules   ClubReadingSchedule[]
+  feedEntries     ActivityFeed[]
+
+  @@map("works")
+}
+
+model Edition {
+  id            String         @id @default(uuid())
+  workId        String         @map("work_id")
+  openLibraryId String?        @unique @map("open_library_id") @db.VarChar(20)
+  isbn10        String?        @map("isbn_10") @db.VarChar(10)
+  isbn13        String?        @map("isbn_13") @db.VarChar(13)
+  title         String?        @db.VarChar(500)
+  publisher     String?        @db.VarChar(255)
+  publishDate   String?        @map("publish_date") @db.VarChar(50)
+  pages         Int?
+  language      String?        @db.VarChar(10)
+  coverUrl      String?        @map("cover_url")
+  format        EditionFormat?
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  work            Work           @relation(fields: [workId], references: [id], onDelete: Cascade)
+  shelfBooks      ShelfBook[]
+  readingSessions ReadingSession[]
+
+  @@map("editions")
+}
+
+model Author {
+  id            String       @id @default(uuid())
+  openLibraryId String?      @unique @map("open_library_id") @db.VarChar(20)
+  name          String       @db.VarChar(255)
+  bio           String?      @db.Text
+  photoUrl      String?      @map("photo_url")
+  birthDate     String?      @map("birth_date") @db.VarChar(50)
+  deathDate     String?      @map("death_date") @db.VarChar(50)
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  workAuthors   WorkAuthor[]
+
+  @@map("authors")
+}
+
+model WorkAuthor {
+  workId   String @map("work_id")
+  authorId String @map("author_id")
+  role     String @default("author") @db.VarChar(50)
+
+  work     Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+  author   Author @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@id([workId, authorId])
+  @@map("work_authors")
+}
+
+model Genre {
+  id         String      @id @default(uuid())
+  name       String      @unique @db.VarChar(100)
+  slug       String      @unique @db.VarChar(100)
+
+  workGenres WorkGenre[]
+
+  @@map("genres")
+}
+
+model WorkGenre {
+  workId  String @map("work_id")
+  genreId String @map("genre_id")
+
+  work    Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+  genre   Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+
+  @@id([workId, genreId])
+  @@map("work_genres")
+}
+
+// ---------------------------------------------------------------------------
+// Shelves & Reading
+// ---------------------------------------------------------------------------
+
+model Shelf {
+  id          String      @id @default(uuid())
+  userId      String      @map("user_id")
+  name        String      @db.VarChar(100)
+  emoji       String?     @db.VarChar(10)
+  slug        String      @db.VarChar(100)
+  description String?     @db.Text
+  isDefault   Boolean     @default(false) @map("is_default")
+  isPublic    Boolean     @default(true) @map("is_public")
+  sortOrder    Int         @default(0) @map("sort_order")
+  bgColour        String? @map("bg_colour") @db.VarChar(20)
+  accentColour    String? @map("accent_colour") @db.VarChar(20)
+  titleColour     String? @map("title_colour") @db.VarChar(20)
+  lightingPreset  String? @map("lighting_preset") @db.VarChar(24)
+  /** 2–5 horizontal tiers (planks) in the 2D shelf scene. */
+  sceneTierCount  Int      @default(2) @map("scene_tier_count")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  books     ShelfBook[]
+  ornaments ShelfOrnament[]
+
+  @@unique([userId, slug])
+  @@map("shelves")
+}
+
+model ShelfBook {
+  id          String   @id @default(uuid())
+  shelfId     String   @map("shelf_id")
+  workId      String   @map("work_id")
+  editionId   String?  @map("edition_id")
+  addedAt     DateTime @default(now()) @map("added_at")
+  sortOrder   Int      @default(0) @map("sort_order")
+  layoutXPct  Float    @default(50) @map("layout_x_pct")
+  layoutYPct  Float    @default(18) @map("layout_y_pct")
+  layoutZ     Int      @default(5) @map("layout_z")
+
+  shelf   Shelf    @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  work    Work     @relation(fields: [workId], references: [id], onDelete: Cascade)
+  edition Edition? @relation(fields: [editionId], references: [id])
+
+  @@unique([shelfId, workId])
+  @@map("shelf_books")
+}
+
+model ShelfOrnament {
+  id        String   @id @default(uuid())
+  shelfId   String   @map("shelf_id")
+  glyph     String   @default("") @db.VarChar(32)
+  imageUrl  String?  @map("image_url") @db.Text
+  xPct      Float    @map("x_pct")
+  yPct      Float    @map("y_pct")
+  zIndex    Int      @default(28) @map("z_index")
+  scale     Float    @default(1) @map("scale")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  shelf Shelf @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+
+  @@map("shelf_ornaments")
+}
+
+model ReadingSession {
+  id                 String   @id @default(uuid())
+  userId             String   @map("user_id")
+  workId             String   @map("work_id")
+  editionId          String?  @map("edition_id")
+  date               DateTime @db.Date
+  pagesRead          Int      @default(0) @map("pages_read")
+  pagesTotal         Int?     @map("pages_total")
+  percentComplete    Float?   @map("percent_complete")
+  notes              String?  @db.Text
+  readingTimeMinutes Int?     @map("reading_time_minutes")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  work               Work     @relation(fields: [workId], references: [id], onDelete: Cascade)
+  edition            Edition? @relation(fields: [editionId], references: [id])
+
+  @@map("reading_sessions")
+}
+
+model ReadingStatsCache {
+  id               String    @id @default(uuid())
+  userId           String    @map("user_id")
+  year             Int
+  month            Int?
+  booksFinished    Int       @default(0) @map("books_finished")
+  pagesRead        Int       @default(0) @map("pages_read")
+  avgPagesPerDay   Float     @default(0) @map("avg_pages_per_day")
+  longestStreak    Int       @default(0) @map("longest_streak")
+  currentStreak    Int       @default(0) @map("current_streak")
+  lastCalculatedAt DateTime? @map("last_calculated_at")
+
+  @@unique([userId, year, month])
+  @@map("reading_stats_cache")
+}
+
+// ---------------------------------------------------------------------------
+// Reviews & Ratings
+// ---------------------------------------------------------------------------
+
+model Review {
+  id               String          @id @default(uuid())
+  userId           String          @map("user_id")
+  workId           String          @map("work_id")
+  rating           Decimal?        @db.Decimal(2, 1)
+  body             String?         @db.Text
+  containsSpoilers Boolean         @default(false) @map("contains_spoilers")
+  isFeatured       Boolean         @default(false) @map("is_featured")
+  upvotesCount     Int             @default(0) @map("upvotes_count")
+  downvotesCount   Int             @default(0) @map("downvotes_count")
+  commentsCount    Int             @default(0) @map("comments_count")
+  deletedAt        DateTime?       @map("deleted_at")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  work     Work            @relation(fields: [workId], references: [id], onDelete: Cascade)
+  votes    ReviewVote[]
+  comments ReviewComment[]
+
+  @@unique([userId, workId])
+  @@map("reviews")
+}
+
+/** +1 (open) or −1 (closed) per user per review — replaces legacy likes. */
+model ReviewVote {
+  id        String   @id @default(uuid())
+  reviewId  String   @map("review_id")
+  userId    String   @map("user_id")
+  value     Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, userId])
+  @@map("review_votes")
+}
+
+model ReviewComment {
+  id             String    @id @default(uuid())
+  reviewId       String    @map("review_id")
+  userId         String    @map("user_id")
+  body           String    @db.Text
+  upvotesCount   Int       @default(0) @map("upvotes_count")
+  downvotesCount Int       @default(0) @map("downvotes_count")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  review Review              @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  user   User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  votes  ReviewCommentVote[]
+
+  @@map("review_comments")
+}
+
+model ReviewCommentVote {
+  id        String   @id @default(uuid())
+  commentId String   @map("comment_id")
+  userId    String   @map("user_id")
+  value     Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  comment ReviewComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@map("review_comment_votes")
+}
+
+/** User recommends a work (rich-text “why”) — optional context work (e.g. written from another book’s page). */
+model BookRecommendation {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  workId         String    @map("work_id")
+  contextWorkId  String?   @map("context_work_id")
+  body           String    @db.Text
+  upvotesCount   Int       @default(0) @map("upvotes_count")
+  downvotesCount Int       @default(0) @map("downvotes_count")
+  commentsCount  Int       @default(0) @map("comments_count")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user         User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  work         Work                        @relation("RecommendationTarget", fields: [workId], references: [id], onDelete: Cascade)
+  contextWork  Work?                       @relation("RecommendationContext", fields: [contextWorkId], references: [id], onDelete: SetNull)
+  votes        BookRecommendationVote[]
+  comments     BookRecommendationComment[]
+
+  @@unique([userId, workId])
+  @@map("book_recommendations")
+}
+
+model BookRecommendationVote {
+  id               String   @id @default(uuid())
+  recommendationId String @map("recommendation_id")
+  userId           String   @map("user_id")
+  value            Int
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  recommendation BookRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([recommendationId, userId])
+  @@map("book_recommendation_votes")
+}
+
+model BookRecommendationComment {
+  id               String    @id @default(uuid())
+  recommendationId String  @map("recommendation_id")
+  userId           String    @map("user_id")
+  body             String    @db.Text
+  upvotesCount     Int       @default(0) @map("upvotes_count")
+  downvotesCount   Int       @default(0) @map("downvotes_count")
+  deletedAt        DateTime? @map("deleted_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  recommendation BookRecommendation             @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  user           User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  votes          BookRecommendationCommentVote[]
+
+  @@map("book_recommendation_comments")
+}
+
+model BookRecommendationCommentVote {
+  id        String   @id @default(uuid())
+  commentId String   @map("comment_id")
+  userId    String   @map("user_id")
+  value     Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  comment BookRecommendationComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@map("book_recommendation_comment_votes")
+}
+
+enum PostAttachmentParent {
+  review
+  book_recommendation
+  review_comment
+  book_recommendation_comment
+  feed_post
+  feed_post_comment
+}
+
+/** Images attached to reviews, recommendations, comments, or feed posts (not inline in HTML). */
+model PostAttachment {
+  id         String               @id @default(uuid())
+  parentType PostAttachmentParent   @map("parent_type")
+  parentId   String               @map("parent_id")
+  url        String               @db.Text
+  caption    String?              @db.VarChar(500)
+  sortOrder  Int                  @default(0) @map("sort_order")
+  createdAt  DateTime             @default(now()) @map("created_at")
+
+  @@index([parentType, parentId])
+  @@map("post_attachments")
+}
+
+/** Standalone community post on the global feed (text + image attachments). */
+model FeedPost {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  body           String?   @db.Text
+  upvotesCount   Int       @default(0) @map("upvotes_count")
+  downvotesCount Int       @default(0) @map("downvotes_count")
+  commentsCount  Int       @default(0) @map("comments_count")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  votes    FeedPostVote[]
+  comments FeedPostComment[]
+
+  @@map("feed_posts")
+}
+
+model FeedPostVote {
+  id         String   @id @default(uuid())
+  feedPostId String   @map("feed_post_id")
+  userId     String   @map("user_id")
+  value      Int
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  feedPost FeedPost @relation(fields: [feedPostId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([feedPostId, userId])
+  @@map("feed_post_votes")
+}
+
+model FeedPostComment {
+  id             String    @id @default(uuid())
+  feedPostId     String    @map("feed_post_id")
+  userId         String    @map("user_id")
+  body           String    @db.Text
+  upvotesCount   Int       @default(0) @map("upvotes_count")
+  downvotesCount Int       @default(0) @map("downvotes_count")
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  feedPost FeedPost              @relation(fields: [feedPostId], references: [id], onDelete: Cascade)
+  user     User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  votes    FeedPostCommentVote[]
+
+  @@map("feed_post_comments")
+}
+
+model FeedPostCommentVote {
+  id        String   @id @default(uuid())
+  commentId String   @map("comment_id")
+  userId    String   @map("user_id")
+  value     Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  comment FeedPostComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+  @@map("feed_post_comment_votes")
+}
+
+// ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+model Collection {
+  id                 String             @id @default(uuid())
+  userId             String             @map("user_id")
+  title              String             @db.VarChar(255)
+  description        String?            @db.Text
+  coverWorkId        String?            @map("cover_work_id")
+  isPublic           Boolean            @default(true) @map("is_public")
+  likesCount         Int                @default(0) @map("likes_count")
+  followersCount     Int                @default(0) @map("followers_count")
+  spotlightCandidate Boolean            @default(false) @map("spotlight_candidate")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  books              CollectionBook[]
+  likes              CollectionLike[]
+  followers          CollectionFollow[]
+
+  @@map("collections")
+}
+
+model CollectionBook {
+  id           String     @id @default(uuid())
+  collectionId String     @map("collection_id")
+  workId       String     @map("work_id")
+  note         String?    @db.Text
+  sortOrder    Int        @default(0) @map("sort_order")
+  addedAt      DateTime   @default(now()) @map("added_at")
+
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  work         Work       @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@map("collection_books")
+}
+
+model CollectionLike {
+  id           String     @id @default(uuid())
+  collectionId String     @map("collection_id")
+  userId       String     @map("user_id")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, userId])
+  @@map("collection_likes")
+}
+
+model CollectionFollow {
+  id           String     @id @default(uuid())
+  collectionId String     @map("collection_id")
+  userId       String     @map("user_id")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, userId])
+  @@map("collection_follows")
+}
+
+// ---------------------------------------------------------------------------
+// Book Clubs
+// ---------------------------------------------------------------------------
+
+model BookClub {
+  id          String                @id @default(uuid())
+  name        String                @db.VarChar(255)
+  slug        String                @unique @db.VarChar(255)
+  description String?               @db.Text
+  coverUrl    String?               @map("cover_url")
+  isPublic    Boolean               @default(true) @map("is_public")
+  memberCount Int                   @default(1) @map("member_count")
+  createdBy   String                @map("created_by")
+  createdAt   DateTime              @default(now()) @map("created_at")
+  updatedAt   DateTime              @updatedAt @map("updated_at")
+
+  members     ClubMember[]
+  schedules   ClubReadingSchedule[]
+  posts       ClubPost[]
+  invites     ClubInvite[]
+
+  @@map("book_clubs")
+}
+
+model ClubMember {
+  id       String         @id @default(uuid())
+  clubId   String         @map("club_id")
+  userId   String         @map("user_id")
+  role     ClubMemberRole @default(member)
+  joinedAt DateTime       @default(now()) @map("joined_at")
+
+  club     BookClub       @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clubId, userId])
+  @@map("club_members")
+}
+
+model ClubReadingSchedule {
+  id        String                @id @default(uuid())
+  clubId    String                @map("club_id")
+  workId    String                @map("work_id")
+  title     String?               @db.VarChar(255)
+  startDate DateTime?             @map("start_date") @db.Date
+  endDate   DateTime?             @map("end_date") @db.Date
+  isCurrent Boolean               @default(false) @map("is_current")
+  createdAt DateTime              @default(now()) @map("created_at")
+
+  club      BookClub              @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  work      Work                  @relation(fields: [workId], references: [id], onDelete: Cascade)
+  segments  ClubScheduleSegment[]
+  posts     ClubPost[]
+
+  @@map("club_reading_schedules")
+}
+
+model ClubScheduleSegment {
+  id           String              @id @default(uuid())
+  scheduleId   String              @map("schedule_id")
+  title        String              @db.VarChar(255)
+  chapterStart Int?                @map("chapter_start")
+  chapterEnd   Int?                @map("chapter_end")
+  dueDate      DateTime?           @map("due_date") @db.Date
+  sortOrder    Int                 @default(0) @map("sort_order")
+
+  schedule     ClubReadingSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  posts        ClubPost[]
+
+  @@map("club_schedule_segments")
+}
+
+model ClubPost {
+  id               String               @id @default(uuid())
+  clubId           String               @map("club_id")
+  userId           String               @map("user_id")
+  scheduleId       String?              @map("schedule_id")
+  segmentId        String?              @map("segment_id")
+  body             String               @db.Text
+  containsSpoilers Boolean              @default(false) @map("contains_spoilers")
+  isLocked         Boolean              @default(false) @map("is_locked")
+  likesCount       Int                  @default(0) @map("likes_count")
+  repliesCount     Int                  @default(0) @map("replies_count")
+  deletedAt        DateTime?            @map("deleted_at")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+
+  club             BookClub             @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  schedule         ClubReadingSchedule? @relation(fields: [scheduleId], references: [id])
+  segment          ClubScheduleSegment? @relation(fields: [segmentId], references: [id])
+  replies          ClubPostReply[]
+
+  @@map("club_posts")
+}
+
+model ClubPostReply {
+  id        String    @id @default(uuid())
+  postId    String    @map("post_id")
+  userId    String    @map("user_id")
+  body      String    @db.Text
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  post      ClubPost  @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("club_post_replies")
+}
+
+model ClubInvite {
+  id        String    @id @default(uuid())
+  clubId    String    @map("club_id")
+  createdBy String    @map("created_by")
+  token     String    @unique @db.VarChar(64)
+  maxUses   Int?      @map("max_uses")
+  useCount  Int       @default(0) @map("use_count")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  club      BookClub  @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@map("club_invites")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications & Messaging
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id         String           @id @default(uuid())
+  userId     String           @map("user_id")
+  type       NotificationType
+  actorId    String?          @map("actor_id")
+  entityType String?          @map("entity_type") @db.VarChar(50)
+  entityId   String?          @map("entity_id")
+  body       String?          @db.Text
+  isRead     Boolean          @default(false) @map("is_read")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model Message {
+  id                 String   @id @default(uuid())
+  senderId           String   @map("sender_id")
+  recipientId        String   @map("recipient_id")
+  body               String   @db.Text
+  isRead             Boolean  @default(false) @map("is_read")
+  deletedBySender    Boolean  @default(false) @map("deleted_by_sender")
+  deletedByRecipient Boolean  @default(false) @map("deleted_by_recipient")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  sender             User     @relation("Sender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient          User     @relation("Recipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+// ---------------------------------------------------------------------------
+// Ambassador & Scoring
+// ---------------------------------------------------------------------------
+
+model UserTierScore {
+  id                 String   @id @default(uuid())
+  userId             String   @unique @map("user_id")
+  score              Float
+  booksLogged        Int      @default(0) @map("books_logged")
+  reviewsWritten     Int      @default(0) @map("reviews_written")
+  avgReviewLikes     Float    @default(0) @map("avg_review_likes")
+  reviewQualityScore Float    @default(0) @map("review_quality_score")
+  communityScore     Float    @default(0) @map("community_score")
+  reportsReceived    Int      @default(0) @map("reports_received")
+  calculatedAt       DateTime @default(now()) @map("calculated_at")
+
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_tier_scores")
+}
+
+model UserBadge {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  badgeType BadgeType @map("badge_type")
+  awardedAt DateTime  @default(now()) @map("awarded_at")
+  awardedBy String?   @map("awarded_by")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_badges")
+}
+
+// ---------------------------------------------------------------------------
+// Activity Feed
+// ---------------------------------------------------------------------------
+
+model ActivityFeed {
+  id         String       @id @default(uuid())
+  userId     String       @map("user_id")
+  actorId    String       @map("actor_id")
+  type       ActivityType
+  entityType String?      @map("entity_type") @db.VarChar(50)
+  entityId   String?      @map("entity_id")
+  workId     String?      @map("work_id")
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  user       User         @relation("FeedOwner", fields: [userId], references: [id], onDelete: Cascade)
+  actor      User         @relation("FeedActor", fields: [actorId], references: [id], onDelete: Cascade)
+  work       Work?        @relation(fields: [workId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("activity_feed")
+}
