@@ -10,6 +10,8 @@ const loginSchema = z.object({
 });
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  // Required behind Railway / Vercel proxies so Auth.js trusts `Host` / forwarded URL.
+  trustHost: true,
   session: { strategy: "jwt" },
   pages: {
     signIn: "/login",
