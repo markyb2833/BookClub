@@ -1,0 +1,5 @@
+[build]
+nixpacks = "latest"
+
+[build.nix]
+node = "22"
