@@ -9,8 +9,9 @@ builder = "nixpacks"
 buildCommand = "npm install --no-audit --no-fund && npx prisma generate && npm run build"
 
 [deploy]
-# Runs with production env (DATABASE_URL, etc.) before the new release goes live.
-releaseCommand = "npx prisma migrate deploy"
-startCommand = "npm run start"
+# Migrations run at **container start** (see scripts/railway-start.sh), not in release:
+# release sometimes cannot reach private Postgres the same way the running app can.
+startCommand = "bash scripts/railway-start.sh"
+# `/api/health` returns 503 unless Postgres + Redis + Meilisearch are all up — otherwise deploy loops.
 healthcheckPath = "/api/health"
 restartPolicyType = "ON_FAILURE"
