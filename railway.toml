@@ -3,8 +3,10 @@
 
 [build]
 builder = "nixpacks"
+# Use `npm install` (not `npm ci`): Railway mounts a cache on `node_modules/.cache`;
+# `npm ci` wipes `node_modules` and hits EBUSY on that path.
 # Prisma client must exist before `next build` imports it.
-buildCommand = "npm ci && npx prisma generate && npm run build"
+buildCommand = "npm install --no-audit --no-fund && npx prisma generate && npm run build"
 
 [deploy]
 # Runs with production env (DATABASE_URL, etc.) before the new release goes live.
