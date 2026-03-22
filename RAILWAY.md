@@ -116,6 +116,25 @@ npm run railway:doctor
 
 Catches local build issues before you waste another deploy.
 
+## 11. Failed migration on deploy (P3009 / P3018)
+
+If `prisma migrate deploy` fails mid-deploy, Railway restarts in a loop until you **clear the failed migration** and redeploy with a fixed migration file.
+
+1. **Fix the migration in git** (empty/broken SQL, wrong column order, etc.) and push.
+2. **Mark the failed migration as rolled back** against the **same** `DATABASE_URL` Railway uses (one-time):
+
+   ```bash
+   # From your machine, with Railway Postgres reachable (e.g. Railway CLI proxy or copied DATABASE_URL):
+   cd app   # or repo root where prisma/ lives
+   npx prisma migrate resolve --rolled-back "MIGRATION_FOLDER_NAME"
+   ```
+
+   Example: `--rolled-back "20260322132520_new"` if that migration failed.
+
+3. **Redeploy** the web service. `migrate deploy` will re-apply that migration (now fixed), then continue with any later ones.
+
+If `migrate resolve` complains about checksums after you edited an already-recorded migration, ask in Prisma docs / support; usually **rolled-back** is enough when the migration **never finished applying** (Postgres rolled back the statement).
+
 ## What this stack does
 
 - **Dockerfile** — Node 22, `npm ci`, `prisma generate`, `next build`.
