@@ -1,17 +1,14 @@
 # Railway config-as-code: https://docs.railway.com/guides/config-as-code
-# Set the service **Root Directory** to this folder (`app/`) in the Railway UI if the repo root is BookClub/.
+# Root Directory in Railway: empty if package.json is at the repo root (see RAILWAY.md).
 
 [build]
-builder = "nixpacks"
-# Use `npm install` (not `npm ci`): Railway mounts a cache on `node_modules/.cache`;
-# `npm ci` wipes `node_modules` and hits EBUSY on that path.
-# Prisma client must exist before `next build` imports it.
-buildCommand = "npm install --no-audit --no-fund && npx prisma generate && npm run build"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
 
 [deploy]
 # Migrations run at **container start** (see scripts/railway-start.sh), not in release:
 # release sometimes cannot reach private Postgres the same way the running app can.
 startCommand = "bash scripts/railway-start.sh"
-# `/api/health` returns 503 unless Postgres + Redis + Meilisearch are all up — otherwise deploy loops.
-healthcheckPath = "/api/health"
+# Use /api/health/railway so deploys succeed without Redis/Meilisearch (search stays broken until you add them).
+healthcheckPath = "/api/health/railway"
 restartPolicyType = "ON_FAILURE"
