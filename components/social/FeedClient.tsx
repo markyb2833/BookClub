@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { useCallback, useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useTheme } from "@/components/ThemeProvider";
 import RichTextEditor from "@/components/editor/RichTextEditor";
 import SafeRichHtml from "@/components/editor/SafeRichHtml";
@@ -76,6 +77,17 @@ type FeedItem =
         createdAt: string;
         user: UserMini;
         attachments: AttMini[];
+        readingLog?: {
+          sessionId: string;
+          readCycle: number;
+          medium: string;
+          periodStart: string;
+          periodEnd: string | null;
+          pagesRead: number;
+          readingTimeMinutes: number | null;
+          progressPercent: number | null;
+          work: WorkMini;
+        };
       };
     };
 
@@ -96,6 +108,27 @@ function excerpt(html: string | null, max = 220): string {
   if (!html) return "";
   const t = richTextToPlain(html);
   return t.length <= max ? t : `${t.slice(0, max)}…`;
+}
+
+function fmtReadingDay(iso: string) {
+  const d = new Date(iso.includes("T") ? iso : `${iso}T12:00:00.000Z`);
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+function fmtReadingMedium(m: string) {
+  if (!m) return "";
+  return m.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+/** Avoid `res.json()` throwing (e.g. HTML error pages, empty body, Safari quirks). */
+function parseJsonBody<T>(raw: string): T | null {
+  const t = raw.trim();
+  if (!t) return null;
+  try {
+    return JSON.parse(t) as T;
+  } catch {
+    return null;
+  }
 }
 
 function VoteRow({
@@ -407,14 +440,23 @@ function FeedPostHero({ attachments }: { attachments: AttMini[] }) {
   );
 }
 
+type FeedScope = "following" | "all";
+
 export default function FeedClient() {
   const { data: session } = useSession();
   const { settings } = useTheme();
   const accent = settings.accentColour;
   const sessionId = session?.user?.id ?? null;
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const feedScope: FeedScope =
+    sessionId && searchParams.get("view") !== "all" ? "following" : "all";
 
   const [sort, setSort] = useState<Sort>("new");
   const [items, setItems] = useState<FeedItem[]>([]);
+  const [followingCount, setFollowingCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [composerHtml, setComposerHtml] = useState("<p></p>");
   const [composerImgs, setComposerImgs] = useState<PickedImage[]>([]);
@@ -432,16 +474,41 @@ export default function FeedClient() {
     );
   }, []);
 
+  const setFeedScope = useCallback(
+    (next: FeedScope) => {
+      if (!sessionId) return;
+      const p = new URLSearchParams(searchParams.toString());
+      if (next === "all") p.set("view", "all");
+      else p.delete("view");
+      const q = p.toString();
+      router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false });
+    },
+    [sessionId, searchParams, pathname, router],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/feed?sort=${sort}`);
-      const d = (await res.json()) as { items: FeedItem[] };
+      const scope = feedScope === "following" ? "following" : "all";
+      const res = await fetch(`/api/feed?sort=${sort}&scope=${scope}`);
+      const text = await res.text();
+      if (feedScope === "following" && res.status === 401) {
+        setItems([]);
+        setFollowingCount(null);
+        return;
+      }
+      const d = parseJsonBody<{ items?: FeedItem[]; followingCount?: number }>(text);
+      if (d == null || !res.ok) {
+        setItems([]);
+        setFollowingCount(null);
+        return;
+      }
       setItems(d.items ?? []);
+      setFollowingCount(typeof d.followingCount === "number" ? d.followingCount : null);
     } finally {
       setLoading(false);
     }
-  }, [sort]);
+  }, [sort, feedScope]);
 
   useEffect(() => {
     void load();
@@ -525,11 +592,30 @@ export default function FeedClient() {
   }
 
   return (
-    <div style={{ maxWidth: 640, margin: "0 auto", padding: "32px 20px 80px" }}>
-      <h1 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 8px", letterSpacing: "-0.5px" }}>Community feed</h1>
-      <p style={{ fontSize: 14, color: "var(--muted)", marginBottom: 24, lineHeight: 1.5 }}>
-        Reviews, recommendations, and posts from readers. Sort by new, top votes, or trending this week.
+    <div style={{ maxWidth: 640, margin: "0 auto", padding: "32px clamp(14px, 4vw, 20px) 80px", width: "100%", boxSizing: "border-box", minWidth: 0 }}>
+      <h1 style={{ fontSize: "clamp(22px, 5.5vw, 26px)", fontWeight: 800, margin: "0 0 8px", letterSpacing: "-0.5px" }}>
+        {feedScope === "following" ? "Home" : "Discover"}
+      </h1>
+      <p style={{ fontSize: 14, color: "var(--muted)", marginBottom: 20, lineHeight: 1.5 }}>
+        {feedScope === "following"
+          ? "Reviews, recommendations, and posts from people you follow (and you)."
+          : "The whole community — reviews, recommendations, and posts from everyone."}
       </p>
+
+      {sessionId && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
+          <button
+            type="button"
+            style={tabStyle(feedScope === "following", accent)}
+            onClick={() => setFeedScope("following")}
+          >
+            Following
+          </button>
+          <button type="button" style={tabStyle(feedScope === "all", accent)} onClick={() => setFeedScope("all")}>
+            Discover
+          </button>
+        </div>
+      )}
 
       {sessionId && (
         <section
@@ -620,7 +706,44 @@ export default function FeedClient() {
       {loading ? (
         <p style={{ color: "var(--muted)", fontSize: 14 }}>Loading…</p>
       ) : items.length === 0 ? (
-        <p style={{ color: "var(--muted)", fontSize: 14 }}>Nothing here yet.</p>
+        <div style={{ color: "var(--muted)", fontSize: 14, lineHeight: 1.6 }}>
+          {feedScope === "following" && sessionId ? (
+            <>
+              <p style={{ margin: "0 0 12px" }}>No activity from your network yet.</p>
+              {(followingCount === 0 || followingCount === null) && (
+                <p style={{ margin: "0 0 12px" }}>
+                  Follow readers from{" "}
+                  <Link href="/search" style={{ color: accent, fontWeight: 600 }}>
+                    Search
+                  </Link>{" "}
+                  (People tab) to see their reviews and posts here.
+                </p>
+              )}
+              <p style={{ margin: 0 }}>
+                Or browse{" "}
+                <button
+                  type="button"
+                  onClick={() => setFeedScope("all")}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    color: accent,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    fontSize: "inherit",
+                    textDecoration: "underline",
+                  }}
+                >
+                  Discover
+                </button>{" "}
+                for the full community feed.
+              </p>
+            </>
+          ) : (
+            <p style={{ margin: 0 }}>Nothing here yet.</p>
+          )}
+        </div>
       ) : (
         <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 16 }}>
           {items.map((item) => (
@@ -874,6 +997,129 @@ function FeedPostCard({
           {new Date(item.createdAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
         </span>
       </div>
+      {p.readingLog ? (
+        <div
+          className="feed-reading-log-card"
+          style={{
+            marginBottom: 12,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 14,
+            padding: 14,
+            borderRadius: 12,
+            border: "1px solid var(--border)",
+            background: "var(--bg)",
+            color: "var(--text)",
+          }}
+        >
+          <div
+            className="feed-reading-cover"
+            style={{
+              width: 56,
+              height: 84,
+              flexShrink: 0,
+              borderRadius: 8,
+              overflow: "hidden",
+              background: "var(--border)",
+              position: "relative",
+            }}
+          >
+            {p.readingLog.work.coverUrl ? (
+              <Image src={p.readingLog.work.coverUrl} alt="" fill sizes="56px" style={{ objectFit: "cover" }} />
+            ) : (
+              <div
+                style={{
+                  fontSize: 9,
+                  padding: 6,
+                  color: "var(--muted)",
+                  lineHeight: 1.25,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  height: "100%",
+                  textAlign: "center",
+                }}
+              >
+                {p.readingLog.work.title.slice(0, 28)}
+                {p.readingLog.work.title.length > 28 ? "…" : ""}
+              </div>
+            )}
+          </div>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.45 }}>
+            <div
+              style={{
+                fontWeight: 800,
+                fontSize: 11,
+                color: accent,
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                marginBottom: 6,
+              }}
+            >
+              Reading log
+            </div>
+            <Link href={`/books/${p.readingLog.work.id}`} style={{ fontWeight: 700, fontSize: 15, color: "var(--text)", textDecoration: "none", display: "block", lineHeight: 1.35 }}>
+              {p.readingLog.work.title}
+            </Link>
+            <div
+              className="feed-reading-meta"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                gap: "10px 14px",
+                marginTop: 12,
+                fontSize: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.03em" }}>Period</div>
+                <div style={{ fontWeight: 600, color: "var(--text)", marginTop: 2 }}>
+                  {p.readingLog.periodEnd
+                    ? `${fmtReadingDay(p.readingLog.periodStart)} – ${fmtReadingDay(p.readingLog.periodEnd)}`
+                    : `From ${fmtReadingDay(p.readingLog.periodStart)}`}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.03em" }}>Pages</div>
+                <div style={{ fontWeight: 600, color: "var(--text)", marginTop: 2 }}>
+                  {p.readingLog.pagesRead > 0 ? `${p.readingLog.pagesRead} read` : "—"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.03em" }}>Time</div>
+                <div style={{ fontWeight: 600, color: "var(--text)", marginTop: 2 }}>
+                  {p.readingLog.readingTimeMinutes != null && p.readingLog.readingTimeMinutes > 0
+                    ? `${p.readingLog.readingTimeMinutes} min total`
+                    : "—"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.03em" }}>Progress</div>
+                <div style={{ fontWeight: 600, color: "var(--text)", marginTop: 2 }}>
+                  {p.readingLog.progressPercent != null && Number.isFinite(p.readingLog.progressPercent)
+                    ? `${Math.round(p.readingLog.progressPercent * 10) / 10}%`
+                    : "—"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.03em" }}>Format</div>
+                <div style={{ fontWeight: 600, color: "var(--text)", marginTop: 2 }}>{fmtReadingMedium(p.readingLog.medium)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.03em" }}>Read</div>
+                <div style={{ fontWeight: 600, color: "var(--text)", marginTop: 2 }}>#{p.readingLog.readCycle}</div>
+              </div>
+            </div>
+            {sessionId && p.user.id === sessionId ? (
+              <div style={{ marginTop: 10 }}>
+                <Link href={`/reading/session/${p.readingLog.sessionId}`} style={{ color: accent, fontWeight: 600, textDecoration: "none", fontSize: 12 }}>
+                  Edit this log
+                </Link>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       <FeedPostHero attachments={p.attachments ?? []} />
       {p.body?.trim() ? (
         <div style={{ fontSize: 15, color: "var(--text)", lineHeight: 1.6 }}>

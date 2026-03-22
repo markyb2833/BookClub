@@ -4,10 +4,12 @@ import {
   searchBooks,
   getWork,
   getEditions,
+  getSeries,
   coverUrl,
   OLSearchDoc,
 } from "./client";
 import { mapSubjectsToGenres, genreSlug } from "./genres";
+import { seriesSlug } from "@/lib/seriesSlug";
 
 // Phrases that indicate a result is not a standalone book
 const NOISE_PATTERNS = [
@@ -17,8 +19,6 @@ const NOISE_PATTERNS = [
 
 function isNoise(doc: OLSearchDoc): boolean {
   if (NOISE_PATTERNS.some((p) => p.test(doc.title))) return true;
-  // Require at least 2 editions — filters out obscure single-entry junk
-  if (doc.edition_count !== undefined && doc.edition_count < 2) return true;
   return false;
 }
 
@@ -30,6 +30,108 @@ function extractText(val: string | { value: string } | undefined): string {
 
 function olKeyToId(key: string): string {
   return key.replace("/works/", "").replace("/authors/", "").replace("/books/", "");
+}
+
+function olSeriesKeyToId(key: string): string {
+  return key.replace(/^\/series\//, "").replace(/\/$/, "").replace(/\.json$/i, "");
+}
+
+/**
+ * Persist Open Library series links for a work (replaces prior rows).
+ * Skips when OL has no series or fetch fails.
+ */
+export async function syncWorkSeriesFromOpenLibrary(workId: string, olWorkKey: string) {
+  let olWork: Awaited<ReturnType<typeof getWork>> | null = null;
+  try {
+    olWork = await getWork(olWorkKey);
+  } catch {
+    return;
+  }
+  const refs = olWork?.series;
+  if (!refs?.length) {
+    await prisma.workSeries.deleteMany({ where: { workId } });
+    return;
+  }
+
+  const seenSeriesKeys = new Set<string>();
+  const toLink: { seriesId: string; position: string | null }[] = [];
+
+  for (const ref of refs) {
+    const sk = ref.series?.key;
+    if (!sk) continue;
+    if (seenSeriesKeys.has(sk)) continue;
+    seenSeriesKeys.add(sk);
+    if (toLink.length >= 4) break;
+
+    const olSeriesId = olSeriesKeyToId(sk);
+    if (!olSeriesId) continue;
+
+    let doc: Awaited<ReturnType<typeof getSeries>>;
+    try {
+      doc = await getSeries(sk);
+    } catch {
+      continue;
+    }
+    const rawName = doc.name?.trim();
+    if (!rawName) continue;
+
+    const slug = seriesSlug(rawName, olSeriesId);
+    const row = await prisma.series.upsert({
+      where: { openLibraryId: olSeriesId },
+      create: {
+        openLibraryId: olSeriesId,
+        name: rawName.slice(0, 300),
+        slug,
+      },
+      update: { name: rawName.slice(0, 300) },
+    });
+
+    const pos = ref.position?.trim() ?? null;
+    toLink.push({ seriesId: row.id, position: pos ? pos.slice(0, 32) : null });
+  }
+
+  await prisma.workSeries.deleteMany({ where: { workId } });
+  if (toLink.length === 0) return;
+
+  await prisma.workSeries.createMany({
+    data: toLink.map((t) => ({
+      workId,
+      seriesId: t.seriesId,
+      position: t.position,
+    })),
+  });
+
+  const workFull = await prisma.work.findUnique({
+    where: { id: workId },
+    include: {
+      workAuthors: { include: { author: true } },
+      workGenres: { include: { genre: true } },
+      workSeries: { include: { series: true } },
+    },
+  });
+  if (workFull) {
+    const description = workFull.description ?? "";
+    await meili
+      .index("works")
+      .updateDocuments([
+        {
+          id: workFull.id,
+          title: workFull.title,
+          subtitle: workFull.subtitle,
+          authors: workFull.workAuthors.map((wa) => wa.author.name),
+          author_ids: workFull.workAuthors.map((wa) => wa.author.id),
+          genres: workFull.workGenres.map((wg) => wg.genre.name),
+          series: workFull.workSeries.map((ws) => ws.series.name),
+          series_slugs: workFull.workSeries.map((ws) => ws.series.slug),
+          description: description.slice(0, 500),
+          first_published: workFull.firstPublished,
+          average_rating: workFull.averageRating,
+          ratings_count: workFull.ratingsCount,
+          cover_url: workFull.coverUrl,
+        },
+      ])
+      .catch(() => null);
+  }
 }
 
 /**
@@ -45,7 +147,12 @@ export async function importFromSearchDoc(doc: OLSearchDoc) {
     where: { openLibraryId: olWorkId },
     include: { workAuthors: { include: { author: true } } },
   });
-  if (existing) return existing;
+  if (existing) {
+    if (existing.openLibraryId) {
+      syncWorkSeriesFromOpenLibrary(existing.id, doc.key).catch(() => null);
+    }
+    return existing;
+  }
 
   // cover_i from search is the most reliable — use it first
   const coverId = doc.cover_i ?? null;
@@ -106,14 +213,24 @@ export async function importFromSearchDoc(doc: OLSearchDoc) {
     include: { workAuthors: { include: { author: true } }, workGenres: { include: { genre: true } } },
   });
 
+  await syncWorkSeriesFromOpenLibrary(work.id, doc.key).catch(() => null);
+
+  const seriesRows = await prisma.workSeries.findMany({
+    where: { workId: work.id },
+    include: { series: true },
+  });
+
   // Index to Meilisearch
   await meili.index("works").addDocuments([
     {
       id: work.id,
       title: work.title,
-      subtitle: null,
+      subtitle: work.subtitle,
       authors: work.workAuthors.map((wa: { author: { name: string } }) => wa.author.name),
+      author_ids: work.workAuthors.map((wa: { author: { id: string } }) => wa.author.id),
       genres: work.workGenres.map((wg: { genre: { name: string } }) => wg.genre.name),
+      series: seriesRows.map((ws) => ws.series.name),
+      series_slugs: seriesRows.map((ws) => ws.series.slug),
       description: description.slice(0, 500),
       first_published: work.firstPublished,
       average_rating: work.averageRating,

@@ -185,7 +185,7 @@ export default function MessagesThread({
         value={text}
         onChange={setText}
         onSend={() => void send()}
-        placeholder="Message…"
+        placeholder="Message…  @ book or author  ·  /user  ·  🔗"
         disabled={!!error && error.includes("follow")}
       />
     </div>

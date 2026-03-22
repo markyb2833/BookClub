@@ -60,26 +60,26 @@ export default function ReaderCommunitySignals({
 
     const bookClubRow =
       community.communityRatingAvg > 0 ? (
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, minWidth: 0 }}>
           <HalfStarRatingDisplay rating={community.communityRatingAvg} fontSize={starSize} />
           <span style={{ fontSize: fs, color: "var(--text)", fontWeight: 600 }}>{community.communityRatingAvg.toFixed(1)}</span>
           {parts.length > 0 ? (
-            <span style={{ fontSize: fsMuted, color: "var(--muted)" }}> · {parts.join(" · ")}</span>
+            <span style={{ fontSize: fsMuted, color: "var(--muted)", minWidth: 0, overflow: "hidden", overflowWrap: "anywhere" }}> · {parts.join(" · ")}</span>
           ) : null}
         </div>
       ) : parts.length > 0 ? (
-        <span style={{ fontSize: fsMuted, color: "var(--muted)", lineHeight: 1.45 }}>{parts.join(" · ")}</span>
+        <span style={{ fontSize: fsMuted, color: "var(--muted)", lineHeight: 1.45, minWidth: 0, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflowWrap: "anywhere" }}>{parts.join(" · ")}</span>
       ) : (
         <span style={{ fontSize: fsMuted, color: "var(--muted)", lineHeight: 1.45 }}>No scores yet</span>
       );
 
     const olRow =
       openLibraryRating > 0 ? (
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, minWidth: 0 }}>
           <HalfStarRatingDisplay rating={openLibraryRating} fontSize={starSize} />
           <span style={{ fontSize: fs, color: "var(--text)", fontWeight: 600 }}>{openLibraryRating.toFixed(1)}</span>
           {openLibraryRatingsCount > 0 ? (
-            <span style={{ fontSize: fsMuted, color: "var(--muted)" }}> · {openLibraryRatingsCount.toLocaleString()} catalogue</span>
+            <span style={{ fontSize: fsMuted, color: "var(--muted)", minWidth: 0, overflow: "hidden", overflowWrap: "anywhere" }}> · {openLibraryRatingsCount.toLocaleString()} catalogue</span>
           ) : null}
         </div>
       ) : (
@@ -87,12 +87,12 @@ export default function ReaderCommunitySignals({
       );
 
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
           <span style={labelStyle}>BookClub</span>
           {bookClubRow}
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
           <span style={labelStyle}>Open Library</span>
           {olRow}
         </div>

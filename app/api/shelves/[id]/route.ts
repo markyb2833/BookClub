@@ -6,6 +6,8 @@ import { z } from "zod";
 
 const lightingValues = ["none", "warm", "cool", "lamp", "fairy", "midnight"] as const;
 
+const bookDisplayValues = ["spine", "cover"] as const;
+
 const editSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).nullable().optional(),
@@ -16,6 +18,9 @@ const editSchema = z.object({
   titleColour: z.string().max(20).nullable().optional(),
   lightingPreset: z.enum(lightingValues).nullable().optional(),
   sceneTierCount: z.number().int().min(2).max(5).optional(),
+  sceneBookDisplay: z.enum(bookDisplayValues).optional(),
+  sceneBookWidthMul: z.number().min(0.35).max(2).optional(),
+  sceneBookHeightMul: z.number().min(0.35).max(2).optional(),
 });
 
 async function getOwnedShelf(id: string, userId: string) {
@@ -49,7 +54,20 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const parsed = editSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0].message }, { status: 400 });
 
-  const { name, description, emoji, isPublic, bgColour, accentColour, titleColour, lightingPreset, sceneTierCount } = parsed.data;
+  const {
+    name,
+    description,
+    emoji,
+    isPublic,
+    bgColour,
+    accentColour,
+    titleColour,
+    lightingPreset,
+    sceneTierCount,
+    sceneBookDisplay,
+    sceneBookWidthMul,
+    sceneBookHeightMul,
+  } = parsed.data;
   const update: Record<string, unknown> = {};
 
   if (name !== undefined) {
@@ -76,6 +94,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (titleColour !== undefined) update.titleColour = titleColour;
   if (lightingPreset !== undefined) update.lightingPreset = lightingPreset === "none" ? null : lightingPreset;
   if (sceneTierCount !== undefined) update.sceneTierCount = sceneTierCount;
+  if (sceneBookDisplay !== undefined) update.sceneBookDisplay = sceneBookDisplay;
+  if (sceneBookWidthMul !== undefined) update.sceneBookWidthMul = sceneBookWidthMul;
+  if (sceneBookHeightMul !== undefined) update.sceneBookHeightMul = sceneBookHeightMul;
 
   const updated = await prisma.shelf.update({ where: { id }, data: update, include: { _count: { select: { books: true } } } });
   return NextResponse.json(updated);

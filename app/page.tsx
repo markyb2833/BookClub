@@ -5,7 +5,7 @@ import MainLayout from "./(main)/layout";
 
 export default async function HomePage() {
   const session = await auth();
-  if (session?.user?.id) redirect("/shelves");
+  if (session?.user?.id) redirect("/feed");
 
   return (
     <MainLayout>

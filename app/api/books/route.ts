@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getWorksCommunityStatsMap, ZERO_COMMUNITY_STATS } from "@/lib/social/workCommunityStats";
 
@@ -8,10 +9,37 @@ export async function GET(req: NextRequest) {
   const limit = 20;
   const genre = searchParams.get("genre");
   const sort = searchParams.get("sort") ?? "popular";
+  const q = searchParams.get("q")?.trim() ?? "";
+  const authorParam = searchParams.get("author");
+  const seriesParam = searchParams.get("series");
+  const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-  const where = genre
-    ? { workGenres: { some: { genre: { slug: genre } } } }
-    : {};
+  const [authorRow, seriesRow] = await Promise.all([
+    authorParam && uuidRe.test(authorParam)
+      ? prisma.author.findUnique({ where: { id: authorParam }, select: { id: true } })
+      : null,
+    seriesParam ? prisma.series.findUnique({ where: { slug: seriesParam }, select: { id: true } }) : null,
+  ]);
+
+  const conditions: Prisma.WorkWhereInput[] = [];
+  if (genre) {
+    conditions.push({ workGenres: { some: { genre: { slug: genre } } } });
+  }
+  if (authorRow) {
+    conditions.push({ workAuthors: { some: { authorId: authorRow.id } } });
+  }
+  if (seriesRow) {
+    conditions.push({ workSeries: { some: { seriesId: seriesRow.id } } });
+  }
+  if (q) {
+    conditions.push({
+      OR: [
+        { title: { contains: q, mode: "insensitive" as const } },
+        { workAuthors: { some: { author: { name: { contains: q, mode: "insensitive" as const } } } } },
+      ],
+    });
+  }
+  const where = conditions.length ? { AND: conditions } : {};
 
   const orderBy =
     sort === "recent"
@@ -29,6 +57,7 @@ export async function GET(req: NextRequest) {
       include: {
         workAuthors: { include: { author: true } },
         workGenres: { include: { genre: true } },
+        workSeries: { include: { series: true } },
       },
     }),
     prisma.work.count({ where }),

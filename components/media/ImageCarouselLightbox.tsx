@@ -50,7 +50,7 @@ export default function ImageCarouselLightbox({
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 2000,
+        zIndex: 4500,
         background: "rgba(0,0,0,0.88)",
         display: "flex",
         flexDirection: "column",

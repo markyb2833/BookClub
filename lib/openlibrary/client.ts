@@ -52,6 +52,12 @@ export async function searchBooks(
 
 // ---- Work ------------------------------------------------------------------
 
+/** Open Library work → series link (when catalogued). */
+export interface OLSeriesRef {
+  series?: { key: string };
+  position?: string;
+}
+
 export interface OLWork {
   key: string;
   title: string;
@@ -60,10 +66,24 @@ export interface OLWork {
   covers?: number[];
   first_publish_date?: string;
   authors?: { author: { key: string } }[];
+  series?: OLSeriesRef[];
 }
 
 export async function getWork(olKey: string): Promise<OLWork> {
-  return get(`${olKey}.json`);
+  const path = olKey.endsWith(".json") ? olKey : `${olKey.replace(/\/$/, "")}.json`;
+  return get(path.startsWith("/") ? path : `/${path}`);
+}
+
+export interface OLSeriesDoc {
+  key?: string;
+  name?: string;
+  description?: string | { value: string };
+}
+
+export async function getSeries(olSeriesKey: string): Promise<OLSeriesDoc> {
+  const base = olSeriesKey.replace(/\.json$/i, "").replace(/\/$/, "");
+  const path = base.startsWith("/") ? `${base}.json` : `/${base}.json`;
+  return get(path);
 }
 
 // ---- Author ----------------------------------------------------------------

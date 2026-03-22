@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import {
+  bookSceneDimensions,
+  normalizeSceneBookDisplay,
+  resolveBookCenterXPctNoOverlap,
+  type BookSceneDisplayMode,
+} from "@/lib/shelves/bookSceneLayout";
 import { spineColour } from "@/lib/shelves/visual";
 import { validateOrnamentDataImageUrl } from "@/lib/shelves/ornamentImage";
 import {
@@ -16,7 +22,6 @@ import {
   surfacePxFromBottom,
 } from "@/lib/shelves/plankLayout";
 import BookSpineHoverCard from "./BookSpineHoverCard";
-import { setShelfDragPayload, type BookDragPayload } from "./shelfDragState";
 
 interface Author {
   name: string;
@@ -30,6 +35,7 @@ interface Work {
   communityRatingAvg?: number;
   communityReviewCount?: number;
   recommendationsReceivedCount?: number;
+  readingProgressPercent?: number | null;
   workAuthors: { author: Author }[];
 }
 
@@ -39,6 +45,10 @@ export interface SceneBook {
   layoutXPct: number;
   layoutYPct: number;
   layoutZ: number;
+  /** null = inherit shelf scene defaults */
+  sceneDisplay?: string | null;
+  sceneWidthMul?: number | null;
+  sceneHeightMul?: number | null;
 }
 
 export interface SceneOrnament {
@@ -62,18 +72,18 @@ const LIGHTING_PRESETS: { id: string; label: string }[] = [
 
 const ORNAMENT_PICKS = ["🪴", "🕯️", "✨", "🖼️", "☕", "🐈", "📷", "🎭", "🏺", "🌙", "💡", "🧸", "🎪", "⚜️"];
 
+const ORNAMENT_SCALE_MIN = 0.4;
+const ORNAMENT_SCALE_MAX = 2.5;
+const ORNAMENT_SCALE_STEP = 0.05;
+/** Movement past this (px) from pointer-down turns an ornament tap into a drag. */
+const ORNAMENT_TAP_DRAG_THRESHOLD_PX = 12;
+const BOOK_TAP_DRAG_THRESHOLD_PX = 12;
+
 const FAIRY_BULB_COUNT = 18;
 
-/** Spine size: per-book height variety, capped by clearance above that shelf (room for hover). */
-function spineSize(workId: string, clearancePx: number) {
-  let hash = 0;
-  for (let j = 0; j < workId.length; j++) hash = (hash * 31 + workId.charCodeAt(j)) & 0xffff;
-  const baseH = 88 + (hash % 3) * 12;
-  const baseW = 26 + (hash % 7 === 0 ? 8 : hash % 4 === 0 ? 4 : 0);
-  const margin = 6;
-  const cap = Math.max(42, Math.min(baseH, Math.floor(clearancePx * 0.82 - margin)));
-  const scale = cap / baseH;
-  return { widthPx: Math.max(18, Math.round(baseW * scale)), heightPx: cap };
+/** Emoji + uploaded images share the same base emblem size (before `scale`) so uploads match premade decor. */
+function ornamentEmblemBasePx(ornClearancePx: number) {
+  return Math.min(32, Math.max(20, Math.round(ornClearancePx * 0.28)));
 }
 
 function buildOrderPayload(books: SceneBook[]) {
@@ -283,61 +293,6 @@ function ShelfLightString({
   );
 }
 
-/** Mini spine preview for HTML5 drag (cursor follows the ghost). */
-function makeSpineDragCanvas(title: string, workId: string, clearancePx: number): { canvas: HTMLCanvasElement; hotX: number; hotY: number } {
-  const { widthPx, heightPx } = spineSize(workId, clearancePx);
-  const scale = 0.85;
-  const dw = Math.max(22, Math.round(widthPx * scale));
-  const dh = Math.max(48, Math.round(heightPx * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = dw;
-  canvas.height = dh;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return { canvas, hotX: dw / 2, hotY: dh };
-  const col = spineColour(title, 0);
-  ctx.fillStyle = col;
-  ctx.fillRect(0, 0, dw, dh);
-  ctx.fillStyle = "rgba(0,0,0,0.2)";
-  ctx.fillRect(0, 0, 3, dh);
-  ctx.fillStyle = "rgba(255,255,255,0.2)";
-  ctx.fillRect(dw - 2, 0, 2, dh);
-  return { canvas, hotX: dw / 2, hotY: dh };
-}
-
-let blankDragImageEl: HTMLImageElement | null = null;
-function getBlankDragImage(): HTMLImageElement {
-  if (!blankDragImageEl) {
-    const img = new Image();
-    img.src =
-      "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-    blankDragImageEl = img;
-  }
-  return blankDragImageEl;
-}
-
-/** Browsers often require the drag image node to be in the document when setDragImage runs. */
-function setBookDragGhostImage(e: React.DragEvent, canvas: HTMLCanvasElement, hotX: number, hotY: number) {
-  const dt = e.dataTransfer;
-  if (!dt) return;
-  try {
-    canvas.style.cssText =
-      "position:fixed;left:-99999px;top:0;width:auto;height:auto;pointer-events:none;opacity:0.99";
-    document.body.appendChild(canvas);
-    dt.setDragImage(canvas, hotX, hotY);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        canvas.remove();
-      });
-    });
-  } catch {
-    try {
-      dt.setDragImage(getBlankDragImage(), 0, 0);
-    } catch {
-      /* allow default drag preview */
-    }
-  }
-}
-
 export default function ShelfScene({
   shelfId,
   shelfAccent,
@@ -346,9 +301,17 @@ export default function ShelfScene({
   lightingPreset,
   tierCount: tierCountProp = 3,
   compact = false,
+  fillHeight = false,
+  wallCellNarrow = false,
+  /** Library wall grid only: layout at Expand design width, then scale down so % positions match Expand (no squeeze). */
+  scaleLayoutToExpandDesignWidth = false,
   readOnly = false,
   onLightingChange,
   onCrossShelfBookDrop,
+  onSceneSnap,
+  sceneBookDisplay: sceneBookDisplayProp,
+  sceneBookWidthMul = 1,
+  sceneBookHeightMul = 1,
 }: {
   shelfId: string;
   shelfAccent: string;
@@ -357,15 +320,61 @@ export default function ShelfScene({
   lightingPreset: string | null;
   /** Number of horizontal planks (2–5). */
   tierCount?: number;
+  /** spine = narrow strip + title; cover = 2∶3 portrait, full cover image, no spine text. */
+  sceneBookDisplay?: string | null;
+  sceneBookWidthMul?: number;
+  sceneBookHeightMul?: number;
   /** Tighter chrome for grid cells. */
   compact?: boolean;
+  /** In a flex column, grow the canvas (e.g. full-screen library editor). */
+  fillHeight?: boolean;
+  /** Library wall on a small screen: short preview canvas; edit chrome lives in Expand / ⚙️. */
+  wallCellNarrow?: boolean;
+  scaleLayoutToExpandDesignWidth?: boolean;
   /** Visitor / preview: no editing, drag, or decor controls. */
   readOnly?: boolean;
   onLightingChange: (preset: string | null) => void;
   onCrossShelfBookDrop: (workId: string, fromShelfId: string, layout?: { xPct: number; yPct: number }) => void;
+  onSceneSnap?: (shelfId: string, books: SceneBook[], ornaments: SceneOrnament[]) => void;
 }) {
   const tierCount = Math.max(2, Math.min(5, Math.round(tierCountProp)));
+  const bookDisplay: BookSceneDisplayMode = normalizeSceneBookDisplay(sceneBookDisplayProp);
+  const bookWMul =
+    typeof sceneBookWidthMul === "number" && Number.isFinite(sceneBookWidthMul) ? sceneBookWidthMul : 1;
+  const bookHMul =
+    typeof sceneBookHeightMul === "number" && Number.isFinite(sceneBookHeightMul) ? sceneBookHeightMul : 1;
+
+  const sceneDefaultsRef = useRef({
+    sceneBookDisplay: sceneBookDisplayProp,
+    bookWMul,
+    bookHMul,
+  });
+  sceneDefaultsRef.current = { sceneBookDisplay: sceneBookDisplayProp, bookWMul, bookHMul };
+
+  function layoutForBook(b: SceneBook): { display: BookSceneDisplayMode; wMul: number; hMul: number } {
+    const d = sceneDefaultsRef.current;
+    const display = normalizeSceneBookDisplay(b.sceneDisplay ?? d.sceneBookDisplay);
+    const wMul =
+      typeof b.sceneWidthMul === "number" && Number.isFinite(b.sceneWidthMul) ? b.sceneWidthMul : d.bookWMul;
+    const hMul =
+      typeof b.sceneHeightMul === "number" && Number.isFinite(b.sceneHeightMul) ? b.sceneHeightMul : d.bookHMul;
+    return { display, wMul, hMul };
+  }
+
+  /**
+   * Narrow library wall: use the same min-height recipe as Expand (fillHeight) so scene height/width track
+   * the viewport like the full editor — avoids a squat aspect-ratio preview that skews book % layout.
+   */
   const canvasRef = useRef<HTMLDivElement>(null);
+  const scaleHostRef = useRef<HTMLDivElement>(null);
+  const scaleInnerRef = useRef<HTMLDivElement>(null);
+  const layoutScaleRef = useRef(1);
+  const scaleWallRef = useRef(false);
+  scaleWallRef.current = scaleLayoutToExpandDesignWidth;
+
+  const [layoutDesignWidthPx, setLayoutDesignWidthPx] = useState(680);
+  const [layoutScale, setLayoutScale] = useState(1);
+
   const [sceneHeightPx, setSceneHeightPx] = useState(480);
   const booksRef = useRef(booksProp);
   const ornamentsRef = useRef(ornamentsProp);
@@ -377,28 +386,93 @@ export default function ShelfScene({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ornamentFileRef = useRef<HTMLInputElement>(null);
 
-  const dragRef = useRef<null | {
-    type: "orn";
+  type PointerCapture = { el: HTMLElement; id: number };
+
+  const dragRef = useRef<
+    | null
+    | {
+        type: "orn";
+        id: string;
+        grabOffsetXPx: number;
+        grabOffsetYPx: number;
+        pointerCapture: PointerCapture | null;
+      }
+    | {
+        type: "book";
+        workId: string;
+        grabOffsetXPx: number;
+        grabOffsetYPx: number;
+        pointerCapture: PointerCapture | null;
+      }
+  >(null);
+
+  const bookPendingRef = useRef<{
+    workId: string;
+    el: HTMLElement;
+    startX: number;
+    startY: number;
+    pointerId: number;
+    pointerCapture: PointerCapture | null;
+  } | null>(null);
+
+  const bookSaveRef = useRef<{ workId: string; layoutXPct: number; layoutYPct: number } | null>(null);
+  const bookSceneSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [bookEditWorkId, setBookEditWorkId] = useState<string | null>(null);
+  const bookEditWorkIdRef = useRef<string | null>(null);
+  bookEditWorkIdRef.current = bookEditWorkId;
+
+  const ornPendingRef = useRef<{
     id: string;
-    grabOffsetXPx: number;
-    grabOffsetYPx: number;
-  }>(null);
+    el: HTMLElement;
+    startX: number;
+    startY: number;
+    pointerId: number;
+    pointerCapture: PointerCapture | null;
+  } | null>(null);
+
+  const [ornResizeId, setOrnResizeId] = useState<string | null>(null);
+  const ornResizeIdRef = useRef<string | null>(null);
+  ornResizeIdRef.current = ornResizeId;
+  const ornScaleSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ornResizeRangeRef = useRef<HTMLInputElement>(null);
 
   const ornSaveRef = useRef<{ id: string; xPct: number; yPct: number } | null>(null);
 
   const booksPropRef = useRef(booksProp);
   booksPropRef.current = booksProp;
-  const bookIdsKey = useMemo(
-    () => [...booksProp].map((b) => b.work.id).sort().join("|"),
+  /** Include layout so intra-shelf moves (same work ids) still sync from parent — fixes expand vs grid sharing stale props. */
+  const booksLayoutSyncKey = useMemo(
+    () =>
+      [...booksProp]
+        .map(
+          (b) =>
+            `${b.work.id}:${b.layoutXPct}:${b.layoutYPct}:${b.layoutZ}:${b.sortOrder}:${b.sceneDisplay ?? ""}:${b.sceneWidthMul ?? ""}:${b.sceneHeightMul ?? ""}`
+        )
+        .sort()
+        .join("|"),
     [booksProp]
   );
   useEffect(() => {
     setBooks(booksPropRef.current);
-  }, [shelfId, bookIdsKey]);
+  }, [shelfId, booksLayoutSyncKey]);
 
+  const ornamentsSyncKey = useMemo(() => {
+    const rows = [...ornamentsProp]
+      .map((o) => [o.id, o.xPct, o.yPct, o.zIndex, o.scale, o.glyph, o.imageUrl ?? ""] as const)
+      .sort((a, b) => a[0].localeCompare(b[0]));
+    return JSON.stringify(rows);
+  }, [ornamentsProp]);
   useEffect(() => {
     setOrnaments(ornamentsProp);
-  }, [ornamentsProp]);
+  }, [ornamentsProp, ornamentsSyncKey]);
+
+  useEffect(() => {
+    if (readOnly || !onSceneSnap) return;
+    const t = window.setTimeout(() => {
+      onSceneSnap(shelfId, books, ornaments);
+    }, 100);
+    return () => window.clearTimeout(t);
+  }, [readOnly, shelfId, books, ornaments, onSceneSnap]);
 
   useEffect(() => {
     booksRef.current = books;
@@ -408,12 +482,50 @@ export default function ShelfScene({
     ornamentsRef.current = ornaments;
   }, [ornaments]);
 
+  useEffect(() => {
+    if (!scaleLayoutToExpandDesignWidth) return;
+    function sync() {
+      if (typeof window === "undefined") return;
+      setLayoutDesignWidthPx(Math.min(Math.max(320, window.innerWidth - 32), 680));
+    }
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, [scaleLayoutToExpandDesignWidth]);
+
+  useLayoutEffect(() => {
+    if (!scaleLayoutToExpandDesignWidth) {
+      layoutScaleRef.current = 1;
+      setLayoutScale(1);
+      return;
+    }
+    const host = scaleHostRef.current;
+    if (!host) return;
+
+    function measure() {
+      const hEl = scaleHostRef.current;
+      if (!hEl) return;
+      const w = hEl.clientWidth;
+      const d = layoutDesignWidthPx;
+      const s = d > 0 ? Math.min(1, w / d) : 1;
+      layoutScaleRef.current = s;
+      setLayoutScale(s);
+    }
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(host);
+    measure();
+    return () => ro.disconnect();
+  }, [scaleLayoutToExpandDesignWidth, layoutDesignWidthPx]);
+
   const plankBottoms = useMemo(
     () => computePlankBottomOffsetsPx(sceneHeightPx, tierCount),
     [sceneHeightPx, tierCount]
   );
   const plankBottomsRef = useRef(plankBottoms);
   plankBottomsRef.current = plankBottoms;
+  const sceneHeightRef = useRef(sceneHeightPx);
+  sceneHeightRef.current = sceneHeightPx;
 
   const backPanelTopPx = useMemo(() => {
     if (!plankBottoms.length) return 14;
@@ -424,9 +536,9 @@ export default function ShelfScene({
   useLayoutEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
-    const h = el.getBoundingClientRect().height;
+    const h = scaleLayoutToExpandDesignWidth ? el.offsetHeight : el.getBoundingClientRect().height;
     if (h >= 80) setSceneHeightPx(Math.round(h));
-  }, [readOnly, compact, tierCount]);
+  }, [readOnly, compact, fillHeight, wallCellNarrow, tierCount, scaleLayoutToExpandDesignWidth, layoutDesignWidthPx]);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -437,7 +549,7 @@ export default function ShelfScene({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [scaleLayoutToExpandDesignWidth]);
 
   const scheduleSaveBooks = useCallback(
     (next: SceneBook[]) => {
@@ -459,9 +571,11 @@ export default function ShelfScene({
     const el = canvasRef.current;
     if (!el) return 50;
     const r = el.getBoundingClientRect();
+    const s = scaleWallRef.current ? Math.max(layoutScaleRef.current, 0.0001) : 1;
+    const layoutW = r.width / s;
     const cx = centerX - r.left;
     let xPct = (cx / r.width) * 100;
-    const marginX = (halfW / r.width) * 100;
+    const marginX = (halfW / layoutW) * 100;
     return Math.max(marginX + 1, Math.min(100 - marginX - 1, xPct));
   }, []);
 
@@ -474,143 +588,446 @@ export default function ShelfScene({
   }, []);
 
   useEffect(() => {
-    function onMove(e: MouseEvent) {
+    function lf(b: SceneBook) {
+      const d = sceneDefaultsRef.current;
+      const display = normalizeSceneBookDisplay(b.sceneDisplay ?? d.sceneBookDisplay);
+      const wMul =
+        typeof b.sceneWidthMul === "number" && Number.isFinite(b.sceneWidthMul) ? b.sceneWidthMul : d.bookWMul;
+      const hMul =
+        typeof b.sceneHeightMul === "number" && Number.isFinite(b.sceneHeightMul) ? b.sceneHeightMul : d.bookHMul;
+      return { display, wMul, hMul };
+    }
+    function collisionWidthPx(workId: string, layoutYPct: number, list: SceneBook[]) {
+      const sceneH = sceneHeightRef.current;
+      const pb = plankBottomsRef.current;
+      const ySnapped = snapLayoutYPctToShelfSurface(layoutYPct, sceneH, pb);
+      const si = shelfIndexFromLayoutYPct(ySnapped, sceneH, pb);
+      const clear = clearanceAboveShelf(si, sceneH, pb);
+      const ob = list.find((x) => x.work.id === workId);
+      const d = sceneDefaultsRef.current;
+      const { display, wMul, hMul } = ob
+        ? lf(ob)
+        : {
+            display: normalizeSceneBookDisplay(d.sceneBookDisplay),
+            wMul: d.bookWMul,
+            hMul: d.bookHMul,
+          };
+      return bookSceneDimensions(workId, clear, display, wMul, hMul).widthPx;
+    }
+
+    function onMove(e: PointerEvent) {
+      const bookPending = bookPendingRef.current;
+      if (bookPending && e.pointerId === bookPending.pointerId) {
+        const dx = e.clientX - bookPending.startX;
+        const dy = e.clientY - bookPending.startY;
+        if (dx * dx + dy * dy <= BOOK_TAP_DRAG_THRESHOLD_PX * BOOK_TAP_DRAG_THRESHOLD_PX) {
+          return;
+        }
+        const rect = bookPending.el.getBoundingClientRect();
+        dragRef.current = {
+          type: "book",
+          workId: bookPending.workId,
+          grabOffsetXPx: e.clientX - (rect.left + rect.width / 2),
+          grabOffsetYPx: rect.bottom - e.clientY,
+          pointerCapture: bookPending.pointerCapture,
+        };
+        bookPendingRef.current = null;
+        setDraggingWorkId(bookPending.workId);
+        setHoverState(null);
+      }
+
+      const pending = ornPendingRef.current;
+      if (pending && e.pointerId === pending.pointerId) {
+        const dx = e.clientX - pending.startX;
+        const dy = e.clientY - pending.startY;
+        if (dx * dx + dy * dy <= ORNAMENT_TAP_DRAG_THRESHOLD_PX * ORNAMENT_TAP_DRAG_THRESHOLD_PX) {
+          return;
+        }
+        const rect = pending.el.getBoundingClientRect();
+        dragRef.current = {
+          type: "orn",
+          id: pending.id,
+          grabOffsetXPx: e.clientX - (rect.left + rect.width / 2),
+          grabOffsetYPx: rect.bottom - e.clientY,
+          pointerCapture: pending.pointerCapture,
+        };
+        ornPendingRef.current = null;
+      }
+
       const d = dragRef.current;
-      if (!d || d.type !== "orn") return;
-      const o = ornamentsRef.current.find((x) => x.id === d.id);
-      if (!o) return;
-      const size = (o.imageUrl ? 44 : 36) * o.scale;
-      const centerX = e.clientX - d.grabOffsetXPx;
-      const bottom = e.clientY + d.grabOffsetYPx;
+      if (!d) return;
+
+      if (d.type === "book") {
+        const el = canvasRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        const s = scaleWallRef.current ? Math.max(layoutScaleRef.current, 0.0001) : 1;
+        const layoutW = r.width / s;
+        e.preventDefault();
+        const b = booksRef.current.find((x) => x.work.id === d.workId);
+        if (!b) return;
+        const sceneH = sceneHeightRef.current;
+        const pb = plankBottomsRef.current;
+        const bottom = e.clientY + d.grabOffsetYPx;
+        const pxFromBottom = (r.bottom - bottom) / s;
+        const yPct = snapBottomToPct(pxFromBottom, sceneH, pb);
+        setDragOverShelfIdx(nearestPlankIndex(pxFromBottom, pb));
+        const si = nearestPlankIndex(pxFromBottom, pb);
+        const clear = clearanceAboveShelf(si, sceneH, pb);
+        const { display, wMul, hMul } = lf(b);
+        const dims = bookSceneDimensions(b.work.id, clear, display, wMul, hMul);
+        const list = booksRef.current;
+        const centerX = e.clientX - d.grabOffsetXPx;
+        let xPct = clampXPct(centerX, dims.widthPx / 2);
+        xPct = resolveBookCenterXPctNoOverlap(
+          xPct,
+          b.work.id,
+          yPct,
+          dims.widthPx,
+          layoutW,
+          list,
+          sceneH,
+          pb,
+          (workId, ly) => collisionWidthPx(workId, ly, list)
+        );
+        bookSaveRef.current = { workId: d.workId, layoutXPct: xPct, layoutYPct: yPct };
+        setBooks((prev) =>
+          prev.map((book) =>
+            book.work.id === d.workId ? { ...book, layoutXPct: xPct, layoutYPct: yPct, layoutZ: 5 } : book
+          )
+        );
+        return;
+      }
+
+      if (d.type !== "orn") return;
       const el = canvasRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      const pxFromBottom = r.bottom - bottom;
-      const yPct = snapBottomToPct(pxFromBottom, r.height, plankBottomsRef.current);
+      const s = scaleWallRef.current ? Math.max(layoutScaleRef.current, 0.0001) : 1;
+      e.preventDefault();
+      const o = ornamentsRef.current.find((x) => x.id === d.id);
+      if (!o) return;
+      const sceneH = sceneHeightRef.current;
+      const pb = plankBottomsRef.current;
+      const si = shelfIndexFromLayoutYPct(o.yPct, sceneH, pb);
+      const clear = clearanceAboveShelf(si, sceneH, pb);
+      const basePx = ornamentEmblemBasePx(clear);
+      const size = basePx * o.scale;
+      const centerX = e.clientX - d.grabOffsetXPx;
+      const bottom = e.clientY + d.grabOffsetYPx;
+      const pxFromBottom = (r.bottom - bottom) / s;
+      const yPct = snapBottomToPct(pxFromBottom, sceneH, plankBottomsRef.current);
       const xPct = clampXPct(centerX, size / 2);
       ornSaveRef.current = { id: d.id, xPct, yPct };
       setOrnaments((prev) => prev.map((x) => (x.id === d.id ? { ...x, xPct, yPct } : x)));
     }
-    function onUp() {
+
+    function onUp(e: PointerEvent) {
+      const bPending = bookPendingRef.current;
+      if (bPending && e.pointerId === bPending.pointerId) {
+        if (bPending.pointerCapture) {
+          try {
+            bPending.pointerCapture.el.releasePointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+        }
+        bookPendingRef.current = null;
+        if (e.type === "pointercancel") return;
+        if (!readOnly) {
+          setBookEditWorkId(bPending.workId);
+        }
+        return;
+      }
+
+      const pending = ornPendingRef.current;
+      if (pending && e.pointerId === pending.pointerId) {
+        if (pending.pointerCapture) {
+          try {
+            pending.pointerCapture.el.releasePointerCapture(e.pointerId);
+          } catch {
+            /* ignore */
+          }
+        }
+        ornPendingRef.current = null;
+        if (e.type === "pointercancel") return;
+        if (e.shiftKey) {
+          void fetch(`/api/shelves/${shelfId}/ornaments/${pending.id}`, { method: "DELETE" }).catch(() => null);
+          setOrnaments((prev) => prev.filter((x) => x.id !== pending.id));
+        } else {
+          setOrnResizeId(pending.id);
+        }
+        return;
+      }
+
       const d = dragRef.current;
+      if (d?.pointerCapture && d.pointerCapture.id === e.pointerId) {
+        try {
+          d.pointerCapture.el.releasePointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
       dragRef.current = null;
+
+      if (d?.type === "book") {
+        setDraggingWorkId(null);
+        setDragOverShelfIdx(null);
+        const saved = bookSaveRef.current;
+        bookSaveRef.current = null;
+        if (!saved || saved.workId !== d.workId) return;
+        const movingBook = booksRef.current.find((bk) => bk.work.id === d.workId);
+        if (!movingBook) return;
+
+        const elAt = document.elementFromPoint(e.clientX, e.clientY);
+        const target = elAt?.closest("[data-shelf-scene-id]") as HTMLElement | null;
+        const targetShelfId = target?.getAttribute("data-shelf-scene-id") ?? null;
+
+        if (targetShelfId && targetShelfId !== shelfId && target) {
+          const tTiers = Math.max(2, Math.min(5, parseInt(target.dataset.shelfSceneTiers ?? "3", 10) || 3));
+          const r = target.getBoundingClientRect();
+          const targetScale = parseFloat(target.dataset.shelfSceneLayoutScale ?? "1") || 1;
+          const ts = Math.max(targetScale, 0.0001);
+          const layoutW = r.width / ts;
+          const layoutH = r.height / ts;
+          const targetSceneH = Math.max(80, Math.round(layoutH));
+          const targetPlanks = computePlankBottomOffsetsPx(targetSceneH, tTiers);
+          const pxFromBottom = (r.bottom - e.clientY) / ts;
+          const yPct = snapBottomToPct(pxFromBottom, targetSceneH, targetPlanks);
+          const si = nearestPlankIndex(pxFromBottom, targetPlanks);
+          const clear = clearanceAboveShelf(si, targetSceneH, targetPlanks);
+          const { display, wMul, hMul } = lf(movingBook);
+          const dims = bookSceneDimensions(d.workId, clear, display, wMul, hMul);
+          const marginX = (dims.widthPx / layoutW) * 100 / 2;
+          let xPct = ((e.clientX - r.left) / r.width) * 100;
+          xPct = Math.max(marginX + 1, Math.min(100 - marginX - 1, xPct));
+
+          onCrossShelfBookDrop(d.workId, shelfId, { xPct, yPct });
+          setBooks((prev) => prev.filter((bk) => bk.work.id !== d.workId));
+          return;
+        }
+
+        setBooks((prev) => {
+          const next = prev.map((bk) =>
+            bk.work.id === d.workId
+              ? { ...bk, layoutXPct: saved.layoutXPct, layoutYPct: saved.layoutYPct, layoutZ: 5 }
+              : bk
+          );
+          scheduleSaveBooks(next);
+          return next;
+        });
+        return;
+      }
+
       if (!d || d.type !== "orn") return;
-      const pending = ornSaveRef.current;
+      const pos = ornSaveRef.current;
       ornSaveRef.current = null;
-      if (pending && pending.id === d.id) {
+      if (pos && pos.id === d.id) {
         fetch(`/api/shelves/${shelfId}/ornaments/${d.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ xPct: pending.xPct, yPct: pending.yPct }),
+          body: JSON.stringify({ xPct: pos.xPct, yPct: pos.yPct }),
         }).catch(() => null);
       }
     }
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
-  }, [clampXPct, shelfId]);
+  }, [clampXPct, onCrossShelfBookDrop, readOnly, scheduleSaveBooks, shelfId, tierCount]);
 
-  function startDragOrn(e: React.MouseEvent, o: SceneOrnament) {
+  function onOrnamentPointerDown(e: React.PointerEvent, o: SceneOrnament) {
     if (readOnly) return;
+    if (!e.isPrimary) return;
     e.preventDefault();
     e.stopPropagation();
     setHoverState(null);
     const el = e.currentTarget as HTMLElement;
-    const rect = el.getBoundingClientRect();
-    dragRef.current = {
-      type: "orn",
+    let pointerCapture: PointerCapture | null = null;
+    try {
+      el.setPointerCapture(e.pointerId);
+      pointerCapture = { el, id: e.pointerId };
+    } catch {
+      /* ignore */
+    }
+    ornPendingRef.current = {
       id: o.id,
-      grabOffsetXPx: e.clientX - (rect.left + rect.width / 2),
-      grabOffsetYPx: rect.bottom - e.clientY,
+      el,
+      startX: e.clientX,
+      startY: e.clientY,
+      pointerId: e.pointerId,
+      pointerCapture,
     };
   }
 
-  function handleBookDragStart(e: React.DragEvent, b: SceneBook) {
-    if (readOnly) {
-      e.preventDefault();
-      return;
+  const scheduleOrnScalePatch = useCallback(
+    (ornId: string, scale: number) => {
+      if (readOnly) return;
+      if (ornScaleSaveTimer.current) clearTimeout(ornScaleSaveTimer.current);
+      ornScaleSaveTimer.current = setTimeout(() => {
+        ornScaleSaveTimer.current = null;
+        fetch(`/api/shelves/${shelfId}/ornaments/${ornId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scale }),
+        }).catch(() => null);
+      }, 400);
+    },
+    [readOnly, shelfId]
+  );
+
+  const closeOrnResize = useCallback(() => {
+    if (ornScaleSaveTimer.current) {
+      clearTimeout(ornScaleSaveTimer.current);
+      ornScaleSaveTimer.current = null;
     }
+    const id = ornResizeIdRef.current;
+    setOrnResizeId(null);
+    if (!readOnly && id) {
+      const o = ornamentsRef.current.find((x) => x.id === id);
+      if (o) {
+        fetch(`/api/shelves/${shelfId}/ornaments/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scale: o.scale }),
+        }).catch(() => null);
+      }
+    }
+  }, [readOnly, shelfId]);
+
+  useLayoutEffect(() => {
+    if (ornResizeId) ornResizeRangeRef.current?.focus();
+  }, [ornResizeId]);
+
+  useEffect(() => {
+    if (!ornResizeId) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") closeOrnResize();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [ornResizeId, closeOrnResize]);
+
+  useEffect(() => {
+    if (!ornResizeId) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [ornResizeId]);
+
+  useEffect(() => {
+    if (ornResizeId && !ornaments.some((x) => x.id === ornResizeId)) {
+      if (ornScaleSaveTimer.current) {
+        clearTimeout(ornScaleSaveTimer.current);
+        ornScaleSaveTimer.current = null;
+      }
+      setOrnResizeId(null);
+    }
+  }, [ornResizeId, ornaments]);
+
+  function onBookPointerDown(e: React.PointerEvent, b: SceneBook) {
+    if (readOnly) return;
+    if (!e.isPrimary) return;
+    e.preventDefault();
     e.stopPropagation();
     setHoverState(null);
-    setDraggingWorkId(b.work.id);
-    const payload: BookDragPayload = { type: "book", workId: b.work.id, fromShelfId: shelfId };
-    setShelfDragPayload(payload);
-    e.dataTransfer.setData("application/json", JSON.stringify(payload));
-    e.dataTransfer.effectAllowed = "move";
-    const bottomPct = snapLayoutYPctToShelfSurface(b.layoutYPct, sceneHeightPx, plankBottoms);
-    const si = shelfIndexFromLayoutYPct(bottomPct, sceneHeightPx, plankBottoms);
-    const clear = clearanceAboveShelf(si, sceneHeightPx, plankBottoms);
-    const { canvas, hotX, hotY } = makeSpineDragCanvas(b.work.title, b.work.id, clear);
-    setBookDragGhostImage(e, canvas, hotX, hotY);
-  }
-
-  function handleBookDragEnd() {
-    setDraggingWorkId(null);
-    setDragOverShelfIdx(null);
-    setShelfDragPayload(null);
-  }
-
-  function parseDropJson(e: React.DragEvent): BookDragPayload | null {
+    const el = e.currentTarget as HTMLElement;
+    let pointerCapture: PointerCapture | null = null;
     try {
-      const p = JSON.parse(e.dataTransfer.getData("application/json")) as BookDragPayload;
-      if (p?.type === "book" && p.workId && p.fromShelfId) return p;
-      return null;
+      el.setPointerCapture(e.pointerId);
+      pointerCapture = { el, id: e.pointerId };
     } catch {
-      return null;
+      /* ignore */
     }
+    bookPendingRef.current = {
+      workId: b.work.id,
+      el,
+      startX: e.clientX,
+      startY: e.clientY,
+      pointerId: e.pointerId,
+      pointerCapture,
+    };
   }
 
-  function handleCanvasDragOver(e: React.DragEvent) {
-    if (readOnly) return;
-    const types = e.dataTransfer.types;
-    if (!types.includes("application/json") && !types.includes("text/plain")) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    const el = canvasRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const pxFromBottom = r.bottom - e.clientY;
-    setDragOverShelfIdx(nearestPlankIndex(pxFromBottom, plankBottoms));
-  }
+  const scheduleBookScenePatch = useCallback(
+    (
+      workId: string,
+      patch: {
+        sceneDisplay?: "spine" | "cover" | null;
+        sceneWidthMul?: number | null;
+        sceneHeightMul?: number | null;
+      }
+    ) => {
+      if (readOnly) return;
+      if (bookSceneSaveTimer.current) clearTimeout(bookSceneSaveTimer.current);
+      bookSceneSaveTimer.current = setTimeout(() => {
+        bookSceneSaveTimer.current = null;
+        fetch(`/api/shelves/${shelfId}/books/${workId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        }).catch(() => null);
+      }, 400);
+    },
+    [readOnly, shelfId]
+  );
 
-  function handleCanvasDragLeave(e: React.DragEvent) {
-    if (readOnly) return;
-    if (canvasRef.current && !canvasRef.current.contains(e.relatedTarget as Node)) {
-      setDragOverShelfIdx(null);
+  const closeBookEdit = useCallback(() => {
+    if (bookSceneSaveTimer.current) {
+      clearTimeout(bookSceneSaveTimer.current);
+      bookSceneSaveTimer.current = null;
     }
-  }
-
-  function handleCanvasDrop(e: React.DragEvent) {
-    if (readOnly) return;
-    e.preventDefault();
-    setDragOverShelfIdx(null);
-    const p = parseDropJson(e);
-    if (!p) return;
-    const el = canvasRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const pxFromBottom = r.bottom - e.clientY;
-    const yPct = snapBottomToPct(pxFromBottom, r.height, plankBottoms);
-    const si = nearestPlankIndex(pxFromBottom, plankBottoms);
-    const clear = clearanceAboveShelf(si, Math.round(r.height), plankBottoms);
-    const { widthPx } = spineSize(p.workId, clear);
-    const xPct = clampXPct(e.clientX, widthPx / 2);
-
-    if (p.fromShelfId === shelfId) {
-      setBooks((prev) => {
-        const next = prev.map((book) =>
-          book.work.id === p.workId ? { ...book, layoutXPct: xPct, layoutYPct: yPct, layoutZ: 5 } : book
-        );
-        scheduleSaveBooks(next);
-        return next;
-      });
-    } else {
-      onCrossShelfBookDrop(p.workId, p.fromShelfId, { xPct, yPct });
+    const wid = bookEditWorkIdRef.current;
+    setBookEditWorkId(null);
+    if (!readOnly && wid) {
+      const b = booksRef.current.find((x) => x.work.id === wid);
+      if (b) {
+        fetch(`/api/shelves/${shelfId}/books/${wid}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sceneDisplay: b.sceneDisplay ?? null,
+            sceneWidthMul: b.sceneWidthMul ?? null,
+            sceneHeightMul: b.sceneHeightMul ?? null,
+          }),
+        }).catch(() => null);
+      }
     }
-  }
+  }, [readOnly, shelfId]);
+
+  useEffect(() => {
+    if (!bookEditWorkId) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") closeBookEdit();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [bookEditWorkId, closeBookEdit]);
+
+  useEffect(() => {
+    if (!bookEditWorkId) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [bookEditWorkId]);
+
+  useEffect(() => {
+    if (bookEditWorkId && !books.some((x) => x.work.id === bookEditWorkId)) {
+      if (bookSceneSaveTimer.current) {
+        clearTimeout(bookSceneSaveTimer.current);
+        bookSceneSaveTimer.current = null;
+      }
+      setBookEditWorkId(null);
+    }
+  }, [bookEditWorkId, books]);
 
   function defaultOrnamentYPct(): number {
     const midIdx = Math.max(0, Math.floor((plankBottoms.length - 1) / 2));
@@ -680,26 +1097,71 @@ export default function ShelfScene({
     reader.readAsDataURL(file);
   }
 
-  async function removeOrnament(id: string) {
-    if (readOnly) return;
-    await fetch(`/api/shelves/${shelfId}/ornaments/${id}`, { method: "DELETE" });
-    setOrnaments((prev) => prev.filter((o) => o.id !== id));
-  }
-
   const lit = lightingStyle(lightingPreset, shelfAccent);
+
+  /** Expand + library wall (fillHeight) share one min-height so layout % / book px match everywhere. */
+  const canvasMinHeight = useMemo(() => {
+    if (fillHeight) {
+      return readOnly
+        ? "min(52dvh, min(100vw - 32px, 640px))"
+        : "min(58dvh, min(100vw - 32px, 680px))";
+    }
+    if (compact) {
+      return readOnly
+        ? "clamp(300px, 58svh, 580px)"
+        : "clamp(280px, 52svh, 540px)";
+    }
+    return 320;
+  }, [fillHeight, compact, readOnly]);
+
+  const ornResizeTarget = ornResizeId ? ornaments.find((o) => o.id === ornResizeId) : undefined;
+  const bookEditTarget = bookEditWorkId ? books.find((b) => b.work.id === bookEditWorkId) : undefined;
+
+  const scaleHostStyle = useMemo((): React.CSSProperties => {
+    const base: React.CSSProperties = {
+      width: "100%",
+      flex: fillHeight ? 1 : undefined,
+      minHeight: 0,
+      display: "flex",
+      flexDirection: "column",
+    };
+    if (!scaleLayoutToExpandDesignWidth) return base;
+    return { ...base, overflowX: "hidden" };
+  }, [fillHeight, scaleLayoutToExpandDesignWidth]);
+
+  const scaleInnerStyle = useMemo((): React.CSSProperties => {
+    const base: React.CSSProperties = {
+      display: "flex",
+      flexDirection: "column",
+      flex: fillHeight ? 1 : undefined,
+      minHeight: 0,
+      width: "100%",
+      boxSizing: "border-box",
+    };
+    if (!scaleLayoutToExpandDesignWidth) return base;
+    return {
+      ...base,
+      width: layoutDesignWidthPx,
+      transform: `scale(${layoutScale})`,
+      transformOrigin: "top left",
+    };
+  }, [fillHeight, layoutDesignWidthPx, layoutScale, scaleLayoutToExpandDesignWidth]);
 
   return (
     <div
       style={{
-        padding: compact ? "6px 0 10px" : "12px 0 20px",
+        padding: wallCellNarrow && compact ? "4px 0 6px" : compact ? "6px 0 10px" : "12px 0 20px",
         display: "flex",
         flexDirection: "column",
-        flex: compact ? 1 : undefined,
-        minHeight: compact ? 0 : undefined,
+        flex: compact || fillHeight ? 1 : undefined,
+        minHeight: compact || fillHeight ? 0 : undefined,
         width: "100%",
+        maxWidth: "100%",
+        minWidth: 0,
+        boxSizing: "border-box",
       }}
     >
-      {!readOnly && (
+      {!readOnly && !wallCellNarrow && (
         <div
           style={{
             display: "flex",
@@ -729,8 +1191,9 @@ export default function ShelfScene({
                   }).catch(() => null);
                 }}
                 style={{
-                  fontSize: 11,
-                  padding: "4px 10px",
+                  fontSize: compact ? 11 : 13,
+                  padding: compact ? "4px 10px" : "10px 14px",
+                  minHeight: compact ? undefined : 44,
                   borderRadius: 8,
                   border: `1px solid ${active ? shelfAccent : "var(--border)"}`,
                   background: active ? `${shelfAccent}22` : "var(--bg)",
@@ -746,7 +1209,7 @@ export default function ShelfScene({
         </div>
       )}
 
-      {!readOnly && (
+      {!readOnly && !wallCellNarrow && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 10, paddingLeft: 4 }}>
           <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, marginRight: 4 }}>Decor</span>
           <input
@@ -761,9 +1224,10 @@ export default function ShelfScene({
             title="Add a small image (max ~200KB)"
             onClick={() => ornamentFileRef.current?.click()}
             style={{
-              fontSize: 11,
+              fontSize: compact ? 11 : 13,
               fontWeight: 600,
-              padding: "4px 10px",
+              padding: compact ? "4px 10px" : "10px 14px",
+              minHeight: compact ? undefined : 44,
               borderRadius: 8,
               border: `1px solid ${shelfAccent}55`,
               background: `${shelfAccent}14`,
@@ -780,9 +1244,11 @@ export default function ShelfScene({
               title="Add to shelf"
               onClick={() => addOrnament(g)}
               style={{
-                fontSize: 20,
+                fontSize: compact ? 20 : 22,
                 lineHeight: 1,
-                padding: "4px 6px",
+                padding: compact ? "4px 6px" : "8px 10px",
+                minWidth: compact ? undefined : 44,
+                minHeight: compact ? undefined : 44,
                 borderRadius: 8,
                 border: "1px solid var(--border)",
                 background: "var(--surface)",
@@ -793,32 +1259,33 @@ export default function ShelfScene({
             </button>
           ))}
           <span style={{ fontSize: 10, color: "var(--muted)", marginLeft: 8 }}>
-            Emoji or image · drag to place · shift+click to remove
+            Emoji or image · drag to place · tap decor to resize · shift+tap to remove · tap books for display & size
           </span>
         </div>
       )}
 
-      <div
-        ref={canvasRef}
-        className="shelf-scene-canvas"
-        onDragOver={handleCanvasDragOver}
-        onDragLeave={handleCanvasDragLeave}
-        onDrop={handleCanvasDrop}
-        style={{
-          position: "relative",
-          flex: 1,
-          minHeight: compact
-            ? readOnly
-              ? "clamp(300px, 58svh, 580px)"
-              : "clamp(280px, 52svh, 540px)"
-            : 320,
-          width: "100%",
-          background: "linear-gradient(to bottom, rgba(0,0,0,0.08) 0%, transparent 28%)",
-          borderRadius: "0 0 12px 12px",
-          border: "1px solid rgba(0,0,0,0.12)",
-          isolation: "isolate",
-        }}
-      >
+      <div ref={scaleHostRef} style={scaleHostStyle}>
+        <div ref={scaleInnerRef} style={scaleInnerStyle}>
+          <div
+            ref={canvasRef}
+            className="shelf-scene-canvas"
+            data-shelf-scene-id={shelfId}
+            data-shelf-scene-tiers={tierCount}
+            data-shelf-scene-layout-scale={scaleLayoutToExpandDesignWidth ? String(layoutScale) : "1"}
+            style={{
+              position: "relative",
+              flex: fillHeight ? 1 : undefined,
+              minHeight: canvasMinHeight as number | string,
+              maxWidth: "100%",
+              width: "100%",
+              boxSizing: "border-box",
+              touchAction: readOnly ? undefined : "none",
+              background: "linear-gradient(to bottom, rgba(0,0,0,0.08) 0%, transparent 28%)",
+              borderRadius: "0 0 12px 12px",
+              border: "1px solid rgba(0,0,0,0.12)",
+              isolation: "isolate",
+            }}
+          >
         {/*
           Lighting filters on the same layer as draggable items cause Chrome/WebKit compositor smears (“trails”)
           when ornaments move. Keep filter + inset glow on this static, pointer-events: none shell only.
@@ -870,7 +1337,11 @@ export default function ShelfScene({
                 zIndex: 1,
               }}
             >
-              {readOnly ? "No books on this shelf yet." : "Drag books here from another shelf, or add from search"}
+              {readOnly
+                ? "No books on this shelf yet."
+                : wallCellNarrow
+                  ? "Add books from search — drag or tap books (preview matches Expand height)"
+                  : "Drag books to move along shelves; tap a book for spine/cover & size"}
             </div>
           )}
 
@@ -906,16 +1377,16 @@ export default function ShelfScene({
           const bottomPct = snapLayoutYPctToShelfSurface(b.layoutYPct, sceneHeightPx, plankBottoms);
           const si = shelfIndexFromLayoutYPct(bottomPct, sceneHeightPx, plankBottoms);
           const clear = clearanceAboveShelf(si, sceneHeightPx, plankBottoms);
-          const { widthPx, heightPx } = spineSize(b.work.id, clear);
+          const { display: bDisp, wMul: bWMul, hMul: bHMul } = layoutForBook(b);
+          const { widthPx, heightPx } = bookSceneDimensions(b.work.id, clear, bDisp, bWMul, bHMul);
           const isDragging = draggingWorkId === b.work.id;
+          const isCover = bDisp === "cover";
           return (
             <div
               key={b.work.id}
               data-workid={b.work.id}
               className="shelf-book-spine"
-              draggable={!readOnly}
-              onDragStart={(e) => handleBookDragStart(e, b)}
-              onDragEnd={handleBookDragEnd}
+              onPointerDown={readOnly ? undefined : (e) => onBookPointerDown(e, b)}
               onMouseEnter={(e) => {
                 if (draggingWorkId) return;
                 const el = e.currentTarget as HTMLElement;
@@ -934,10 +1405,12 @@ export default function ShelfScene({
                 width: widthPx,
                 height: heightPx,
                 zIndex: b.layoutZ,
-                borderRadius: "2px 4px 4px 2px",
+                borderRadius: isCover ? 6 : "2px 4px 4px 2px",
                 overflow: "hidden",
                 boxShadow: isDragging ? "none" : "1px 3px 8px rgba(0,0,0,0.32)",
                 cursor: readOnly ? "default" : "grab",
+                touchAction: readOnly ? undefined : "none",
+                userSelect: "none",
                 background: colour,
                 opacity: isDragging ? 0.35 : 1,
                 transition: isDragging
@@ -945,111 +1418,176 @@ export default function ShelfScene({
                   : "opacity 0.12s ease, bottom 0.2s cubic-bezier(0.4, 0, 0.2, 1), left 0.2s cubic-bezier(0.4, 0, 0.2, 1), transform 0.12s ease, box-shadow 0.12s ease",
               }}
             >
-              {b.work.coverUrl && (
+              {b.work.coverUrl ? (
                 <img
                   src={b.work.coverUrl}
                   alt=""
                   draggable={false}
-                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", pointerEvents: "none" }}
-                />
-              )}
-              <div
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "4px 2px",
-                  background: "linear-gradient(to right, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.12) 55%, transparent 100%)",
-                  pointerEvents: "none",
-                }}
-              >
-                <span
                   style={{
-                    writingMode: "vertical-rl",
-                    textOrientation: "mixed",
-                    transform: "rotate(180deg)",
-                    fontSize: 7,
-                    fontWeight: 700,
-                    color: "#fff",
-                    lineHeight: 1.1,
-                    overflow: "hidden",
-                    maxHeight: "90%",
-                    textShadow: "0 0 2px #000",
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                    pointerEvents: "none",
+                  }}
+                />
+              ) : null}
+              {isCover ? (
+                !b.work.coverUrl ? (
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 6,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: Math.max(8, Math.min(12, Math.round(widthPx / 7))),
+                        fontWeight: 700,
+                        color: "#fff",
+                        textAlign: "center",
+                        lineHeight: 1.2,
+                        overflow: "hidden",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 4,
+                        WebkitBoxOrient: "vertical",
+                        textShadow: "0 1px 3px rgba(0,0,0,0.75)",
+                      }}
+                    >
+                      {b.work.title}
+                    </span>
+                  </div>
+                ) : null
+              ) : (
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "4px 2px",
+                    background: "linear-gradient(to right, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.12) 55%, transparent 100%)",
+                    pointerEvents: "none",
                   }}
                 >
-                  {b.work.title.slice(0, 26)}
-                </span>
-              </div>
+                  <span
+                    style={{
+                      writingMode: "vertical-rl",
+                      textOrientation: "mixed",
+                      transform: "rotate(180deg)",
+                      fontSize: 7,
+                      fontWeight: 700,
+                      color: "#fff",
+                      lineHeight: 1.1,
+                      overflow: "hidden",
+                      maxHeight: "90%",
+                      textShadow: "0 0 2px #000",
+                    }}
+                  >
+                    {b.work.title.slice(0, 26)}
+                  </span>
+                </div>
+              )}
+              {(() => {
+                const rp = b.work.readingProgressPercent;
+                if (rp == null || !Number.isFinite(rp)) return null;
+                const pct = Math.min(100, Math.max(0, rp));
+                return (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      height: 3,
+                      background: "rgba(0,0,0,0.28)",
+                      pointerEvents: "none",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${pct}%`,
+                        background: shelfAccent,
+                        borderRadius: "0 0 0 1px",
+                      }}
+                    />
+                  </div>
+                );
+              })()}
             </div>
           );
         })}
 
         {ornaments.map((o) => {
-          const ornSi = shelfIndexFromLayoutYPct(o.yPct, sceneHeightPx, plankBottoms);
+          /** Same as book spines: re-snap to nearest shelf surface for this scene height so stored % stays aligned across viewports. */
+          const bottomPctResolved = snapLayoutYPctToShelfSurface(o.yPct, sceneHeightPx, plankBottoms);
+          const ornSi = shelfIndexFromLayoutYPct(bottomPctResolved, sceneHeightPx, plankBottoms);
           const ornClear = clearanceAboveShelf(ornSi, sceneHeightPx, plankBottoms);
+          const basePx = ornamentEmblemBasePx(ornClear);
           return (
-          <div
-            key={o.id}
-            onMouseDown={readOnly ? undefined : (e) => startDragOrn(e, o)}
-            onClick={
-              readOnly
-                ? undefined
-                : (e) => {
-                    if (e.shiftKey) {
-                      e.preventDefault();
-                      removeOrnament(o.id);
-                    }
-                  }
-            }
-            style={{
-              position: "absolute",
-              left: `${o.xPct}%`,
-              bottom: `${o.yPct}%`,
-              transform: `translateX(-50%) scale(${o.scale})`,
-              zIndex: o.zIndex,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: "fit-content",
-              height: "fit-content",
-              fontSize: o.imageUrl
-                ? undefined
-                : Math.min(32, Math.max(20, Math.round(ornClear * 0.28))),
-              lineHeight: 1,
-              cursor: readOnly ? "default" : "grab",
-              userSelect: "none",
-              background: "transparent",
-            }}
-            title={readOnly ? undefined : "Drag — shift+click to remove"}
-          >
-            {o.imageUrl ? (
-              <img
-                src={o.imageUrl}
-                alt=""
-                draggable={false}
-                style={{
-                  maxWidth: 44,
-                  maxHeight: 44,
-                  width: "auto",
-                  height: "auto",
-                  objectFit: "contain",
-                  pointerEvents: "none",
-                  display: "block",
-                }}
-              />
-            ) : (
-              o.glyph
-            )}
-          </div>
+            <div
+              key={o.id}
+              onPointerDown={readOnly ? undefined : (e) => onOrnamentPointerDown(e, o)}
+              style={{
+                position: "absolute",
+                left: `${o.xPct}%`,
+                bottom: `${bottomPctResolved}%`,
+                transform: `translateX(-50%) scale(${o.scale})`,
+                transformOrigin: "center bottom",
+                zIndex: o.zIndex,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "fit-content",
+                height: "fit-content",
+                lineHeight: 1,
+                cursor: readOnly ? "default" : "grab",
+                touchAction: readOnly ? undefined : "none",
+                userSelect: "none",
+                background: "transparent",
+              }}
+              title={
+                readOnly
+                  ? undefined
+                  : "Tap to resize · drag to move · shift+tap to remove"
+              }
+            >
+              {o.imageUrl ? (
+                <img
+                  src={o.imageUrl}
+                  alt=""
+                  draggable={false}
+                  style={{
+                    maxWidth: basePx,
+                    maxHeight: basePx,
+                    width: "auto",
+                    height: "auto",
+                    objectFit: "contain",
+                    pointerEvents: "none",
+                    display: "block",
+                  }}
+                />
+              ) : (
+                <span style={{ fontSize: basePx, lineHeight: 1, display: "block" }}>{o.glyph}</span>
+              )}
+            </div>
           );
         })}
+          </div>
+        </div>
       </div>
 
-      {!readOnly && (
+      {!readOnly && !wallCellNarrow && (
         <p style={{ fontSize: 11, color: "var(--muted)", margin: "10px 4px 0", lineHeight: 1.45 }}>
-          Drag a spine — a small preview follows the cursor; on release the book snaps to the nearest shelf. Decor uses the same shelf lines.{" "}
+          Drag a book to reposition or move to another shelf; tap for spine vs cover and size. Decor uses the same shelf lines.{" "}
           <Link href="/search" style={{ color: shelfAccent, textDecoration: "none", fontWeight: 500 }}>
             Add books
           </Link>
@@ -1070,6 +1608,335 @@ export default function ShelfScene({
             authors: hoverState.book.workAuthors.map((wa) => wa.author.name),
           }}
         />
+      )}
+
+      {ornResizeTarget && !readOnly && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 4550,
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "center",
+            padding: 0,
+            paddingBottom: "env(safe-area-inset-bottom)",
+            boxSizing: "border-box",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            role="presentation"
+            aria-hidden
+            onClick={closeOrnResize}
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,0.42)",
+              pointerEvents: "auto",
+            }}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="orn-resize-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: "relative",
+              zIndex: 1,
+              width: "100%",
+              maxWidth: 480,
+              maxHeight: "min(42vh, 380px)",
+              overflow: "auto",
+              padding: "18px 18px 16px",
+              borderRadius: "14px 14px 0 0",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderBottom: "none",
+              boxShadow: "0 -8px 40px rgba(0,0,0,0.28)",
+              boxSizing: "border-box",
+              pointerEvents: "auto",
+            }}
+          >
+            <h2
+              id="orn-resize-title"
+              style={{
+                margin: "0 0 14px",
+                fontSize: 16,
+                fontWeight: 700,
+                color: "var(--foreground)",
+              }}
+            >
+              Decor size
+            </h2>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <input
+                ref={ornResizeRangeRef}
+                type="range"
+                min={ORNAMENT_SCALE_MIN}
+                max={ORNAMENT_SCALE_MAX}
+                step={ORNAMENT_SCALE_STEP}
+                value={Math.min(
+                  ORNAMENT_SCALE_MAX,
+                  Math.max(ORNAMENT_SCALE_MIN, ornResizeTarget.scale)
+                )}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  setOrnaments((prev) =>
+                    prev.map((x) => (x.id === ornResizeTarget.id ? { ...x, scale: v } : x))
+                  );
+                  scheduleOrnScalePatch(ornResizeTarget.id, v);
+                }}
+                style={{ flex: 1, minWidth: 0, accentColor: shelfAccent }}
+              />
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--muted)",
+                  minWidth: 46,
+                  textAlign: "right",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {Math.round(ornResizeTarget.scale * 100)}%
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={closeOrnResize}
+              style={{
+                width: "100%",
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: `1px solid ${shelfAccent}88`,
+                background: `${shelfAccent}22`,
+                color: shelfAccent,
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+
+      {bookEditTarget && !readOnly && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 4548,
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "center",
+            padding: 0,
+            paddingBottom: "env(safe-area-inset-bottom)",
+            boxSizing: "border-box",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            role="presentation"
+            aria-hidden
+            onClick={closeBookEdit}
+            style={{
+              position: "absolute",
+              inset: 0,
+              background: "rgba(0,0,0,0.42)",
+              pointerEvents: "auto",
+            }}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="book-scene-edit-title"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: "relative",
+              zIndex: 1,
+              width: "100%",
+              maxWidth: 480,
+              maxHeight: "min(55vh, 480px)",
+              overflow: "auto",
+              padding: "18px 18px 12px",
+              borderRadius: "14px 14px 0 0",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderBottom: "none",
+              boxShadow: "0 -8px 40px rgba(0,0,0,0.28)",
+              boxSizing: "border-box",
+              pointerEvents: "auto",
+            }}
+          >
+            <h2
+              id="book-scene-edit-title"
+              style={{
+                margin: "0 0 6px",
+                fontSize: 16,
+                fontWeight: 700,
+                color: "var(--foreground)",
+                lineHeight: 1.3,
+              }}
+            >
+              Book on shelf
+            </h2>
+            <p
+              style={{
+                margin: "0 0 14px",
+                fontSize: 12,
+                color: "var(--muted)",
+                lineHeight: 1.4,
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+              }}
+            >
+              {bookEditTarget.work.title}
+            </p>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 8 }}>Display</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {(["spine", "cover"] as const).map((mode) => {
+                const active = layoutForBook(bookEditTarget).display === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      const wid = bookEditTarget.work.id;
+                      setBooks((prev) =>
+                        prev.map((bk) => (bk.work.id === wid ? { ...bk, sceneDisplay: mode } : bk))
+                      );
+                      scheduleBookScenePatch(wid, { sceneDisplay: mode });
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${active ? shelfAccent : "var(--border)"}`,
+                      background: active ? `${shelfAccent}18` : "var(--bg)",
+                      color: active ? shelfAccent : "var(--muted)",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {mode === "spine" ? "Spine" : "Cover"}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Size (width × height)</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+              <label style={{ fontSize: 11, color: "var(--muted)", display: "block" }}>
+                Width{" "}
+                {(typeof bookEditTarget.sceneWidthMul === "number" ? bookEditTarget.sceneWidthMul : bookWMul).toFixed(2)}
+                ×
+                <input
+                  type="range"
+                  min={0.35}
+                  max={2}
+                  step={0.05}
+                  value={
+                    typeof bookEditTarget.sceneWidthMul === "number" ? bookEditTarget.sceneWidthMul : bookWMul
+                  }
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    const wid = bookEditTarget.work.id;
+                    setBooks((prev) =>
+                      prev.map((bk) => (bk.work.id === wid ? { ...bk, sceneWidthMul: v } : bk))
+                    );
+                    scheduleBookScenePatch(wid, { sceneWidthMul: v });
+                  }}
+                  style={{ display: "block", width: "100%", marginTop: 6, accentColor: shelfAccent }}
+                />
+              </label>
+              <label style={{ fontSize: 11, color: "var(--muted)", display: "block" }}>
+                Height{" "}
+                {(typeof bookEditTarget.sceneHeightMul === "number" ? bookEditTarget.sceneHeightMul : bookHMul).toFixed(2)}
+                ×
+                <input
+                  type="range"
+                  min={0.35}
+                  max={2}
+                  step={0.05}
+                  value={
+                    typeof bookEditTarget.sceneHeightMul === "number" ? bookEditTarget.sceneHeightMul : bookHMul
+                  }
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    const wid = bookEditTarget.work.id;
+                    setBooks((prev) =>
+                      prev.map((bk) => (bk.work.id === wid ? { ...bk, sceneHeightMul: v } : bk))
+                    );
+                    scheduleBookScenePatch(wid, { sceneHeightMul: v });
+                  }}
+                  style={{ display: "block", width: "100%", marginTop: 6, accentColor: shelfAccent }}
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const wid = bookEditTarget.work.id;
+                setBooks((prev) =>
+                  prev.map((bk) =>
+                    bk.work.id === wid
+                      ? { ...bk, sceneDisplay: null, sceneWidthMul: null, sceneHeightMul: null }
+                      : bk
+                  )
+                );
+                if (bookSceneSaveTimer.current) {
+                  clearTimeout(bookSceneSaveTimer.current);
+                  bookSceneSaveTimer.current = null;
+                }
+                void fetch(`/api/shelves/${shelfId}/books/${wid}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    sceneDisplay: null,
+                    sceneWidthMul: null,
+                    sceneHeightMul: null,
+                  }),
+                }).catch(() => null);
+              }}
+              style={{
+                width: "100%",
+                marginBottom: 10,
+                padding: "8px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--muted)",
+                fontWeight: 600,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              Use shelf defaults
+            </button>
+            <button
+              type="button"
+              onClick={closeBookEdit}
+              style={{
+                width: "100%",
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: `1px solid ${shelfAccent}88`,
+                background: `${shelfAccent}22`,
+                color: shelfAccent,
+                fontWeight: 600,
+                fontSize: 14,
+                cursor: "pointer",
+              }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

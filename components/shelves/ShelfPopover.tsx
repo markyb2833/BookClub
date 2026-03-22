@@ -15,7 +15,14 @@ interface Shelf {
 
 const EMOJI_OPTIONS = ["📚", "📖", "⭐", "❤️", "🔖", "🌟", "✅", "🎯", "💡", "🗂️", "🏆", "🌙", "🔥", "💎", "🎭"];
 
-export default function ShelfPopover({ workId }: { workId: string }) {
+export default function ShelfPopover({
+  workId,
+  popoverAlign = "right",
+}: {
+  workId: string;
+  /** Where the dropdown anchors (use `left` when the trigger sits on the left side of the card). */
+  popoverAlign?: "left" | "right";
+}) {
   const { data: session } = useSession();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -126,7 +133,10 @@ export default function ShelfPopover({ workId }: { workId: string }) {
 
       {open && (
         <div style={{
-          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 300,
+          position: "absolute",
+          top: "calc(100% + 6px)",
+          ...(popoverAlign === "left" ? { left: 0 } : { right: 0 }),
+          zIndex: 300,
           background: "var(--surface)", border: "1px solid var(--border)",
           borderRadius: 14, width: 240, boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
           overflow: "hidden",

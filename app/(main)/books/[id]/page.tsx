@@ -1,10 +1,13 @@
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import BookCover from "@/components/books/BookCover";
+import BrowseBooksBackLink from "@/components/books/BrowseBooksBackLink";
 import Link from "next/link";
 import { profileLinksHiddenForViewer } from "@/lib/social/blocking";
-import { importEditions } from "@/lib/openlibrary/import";
+import { importEditions, syncWorkSeriesFromOpenLibrary } from "@/lib/openlibrary/import";
+import { booksBrowseHref } from "@/lib/booksBrowseHref";
 import ShelfPopover from "@/components/shelves/ShelfPopover";
 import BookCommunitySection from "@/components/books/BookCommunitySection";
 import ReaderCommunitySignals from "@/components/books/ReaderCommunitySignals";
@@ -28,12 +31,22 @@ export default async function BookPage({ params }: Props) {
     where: { id },
     include: {
       workAuthors: { include: { author: true } },
-      workGenres:  { include: { genre: true } },
+      workGenres: { include: { genre: true } },
+      workSeries: { include: { series: true } },
       editions: { orderBy: { pages: "desc" }, take: 5 },
     },
   });
 
   if (!work) notFound();
+
+  let workSeriesRows = work.workSeries;
+  if (work.openLibraryId && work.workSeries.length === 0) {
+    await syncWorkSeriesFromOpenLibrary(work.id, `/works/${work.openLibraryId}`).catch(() => null);
+    workSeriesRows = await prisma.workSeries.findMany({
+      where: { workId: work.id },
+      include: { series: true },
+    });
+  }
 
   const community = await getWorkCommunityStats(prisma, id);
 
@@ -62,9 +75,18 @@ export default async function BookPage({ params }: Props) {
 
   const authors = work.workAuthors.map((wa) => wa.author);
   const genres = work.workGenres.map((wg) => wg.genre);
+  const seriesLinks = [...workSeriesRows].sort((a, b) => {
+    const pa = parseFloat(a.position ?? "");
+    const pb = parseFloat(b.position ?? "");
+    if (Number.isFinite(pa) && Number.isFinite(pb) && pa !== pb) return pa - pb;
+    return a.series.name.localeCompare(b.series.name);
+  });
 
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "40px 24px 80px" }}>
+      <Suspense fallback={null}>
+        <BrowseBooksBackLink />
+      </Suspense>
 
       {/* Hero */}
       <div style={{ display: "flex", gap: 32, marginBottom: 40, flexWrap: "wrap" }}>
@@ -83,10 +105,40 @@ export default async function BookPage({ params }: Props) {
               {authors.map((a, i) => (
                 <span key={a.id}>
                   {i > 0 && ", "}
-                  <span style={{ color: "var(--text)", fontWeight: 500 }}>{a.name}</span>
+                  <Link
+                    href={booksBrowseHref({ author: a.id })}
+                    style={{ color: "var(--accent)", fontWeight: 600, textDecoration: "none" }}
+                  >
+                    {a.name}
+                  </Link>
                 </span>
               ))}
             </p>
+          )}
+
+          {seriesLinks.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", letterSpacing: "0.05em" }}>SERIES</span>
+              {seriesLinks.map((ws) => (
+                <Link
+                  key={ws.seriesId}
+                  href={booksBrowseHref({ series: ws.series.slug })}
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 600,
+                    color: "var(--text)",
+                    textDecoration: "none",
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    borderRadius: 999,
+                    padding: "4px 12px",
+                  }}
+                >
+                  {ws.series.name}
+                  {ws.position ? ` · #${ws.position}` : ""}
+                </Link>
+              ))}
+            </div>
           )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -105,7 +157,7 @@ export default async function BookPage({ params }: Props) {
               {genres.map((g) => (
                 <Link
                   key={g.id}
-                  href={`/books?genre=${g.slug}`}
+                  href={booksBrowseHref({ genre: g.slug })}
                   style={{
                     fontSize: 12, fontWeight: 500,
                     background: "var(--bg)", color: "var(--muted)",

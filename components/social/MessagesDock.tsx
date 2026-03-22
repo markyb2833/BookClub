@@ -121,12 +121,13 @@ function MessagesDockChrome({
           className="messages-dock-fab-wrap"
           style={{
             position: "fixed",
-            zIndex: 210,
+            zIndex: 4040,
             right: 20,
             bottom: "calc(72px + env(safe-area-inset-bottom, 0px))",
             width: 56,
             height: 56,
             pointerEvents: "none",
+            transform: "translateZ(0)",
           }}
         >
           <style>{`
@@ -183,7 +184,7 @@ function MessagesDockChrome({
             style={{
               position: "fixed",
               inset: 0,
-              zIndex: 205,
+              zIndex: 4050,
               background: "rgba(0,0,0,0.2)",
               border: "none",
               cursor: "pointer",
@@ -194,7 +195,7 @@ function MessagesDockChrome({
             aria-label="Messages"
             style={{
               position: "fixed",
-              zIndex: 206,
+              zIndex: 4051,
               right: 16,
               bottom: "calc(72px + env(safe-area-inset-bottom, 0px) + 64px)",
               width: "min(100vw - 32px, 400px)",

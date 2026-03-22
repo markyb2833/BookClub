@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, useMemo, type ReactNode } from "react";
-import ShelfScene from "./ShelfScene";
+import ShelfScene, { type SceneBook, type SceneOrnament } from "./ShelfScene";
 import ShelfColourPicker from "./ShelfColourPicker";
 import { DEFAULT_SHELF_EMOJIS } from "@/lib/shelves/visual";
 import {
@@ -13,6 +13,7 @@ import {
   type WallSlots,
 } from "@/lib/shelves/libraryWall";
 import type { LibraryShelf, LibraryShelfBook } from "@/lib/shelves/libraryShelfTypes";
+import { useNarrowLibrary } from "./useNarrowLibrary";
 
 export type { LibraryShelf } from "@/lib/shelves/libraryShelfTypes";
 
@@ -23,7 +24,19 @@ function toSceneBook(b: LibraryShelfBook) {
     layoutXPct: typeof b.layoutXPct === "number" ? b.layoutXPct : 50,
     layoutYPct: typeof b.layoutYPct === "number" ? b.layoutYPct : 18,
     layoutZ: typeof b.layoutZ === "number" ? b.layoutZ : 5,
+    sceneDisplay: b.sceneDisplay ?? null,
+    sceneWidthMul: typeof b.sceneWidthMul === "number" ? b.sceneWidthMul : null,
+    sceneHeightMul: typeof b.sceneHeightMul === "number" ? b.sceneHeightMul : null,
   };
+}
+
+function sameBookIdSetAsSnap(shelf: LibraryShelf, snap: { books: SceneBook[] }) {
+  if (shelf.books.length !== snap.books.length) return false;
+  const ids = new Set(shelf.books.map((b) => b.work.id));
+  for (const b of snap.books) {
+    if (!ids.has(b.work.id)) return false;
+  }
+  return true;
 }
 
 const COLOUR_PRESETS = [
@@ -127,6 +140,116 @@ function SimpleModal({
   );
 }
 
+function LibraryFullscreenSheet({
+  open,
+  title,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="library-fullscreen-title"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 6500,
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--bg)",
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
+    >
+      <div
+        style={{
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "12px 16px",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--surface)",
+        }}
+      >
+        <h2
+          id="library-fullscreen-title"
+          style={{
+            margin: 0,
+            fontSize: 17,
+            fontWeight: 800,
+            color: "var(--text)",
+            lineHeight: 1.25,
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {title}
+        </h2>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          style={{
+            flexShrink: 0,
+            minWidth: 44,
+            minHeight: 44,
+            borderRadius: 12,
+            border: "1px solid var(--border)",
+            background: "var(--bg)",
+            color: "var(--text)",
+            fontSize: 20,
+            lineHeight: 1,
+            cursor: "pointer",
+          }}
+        >
+          ×
+        </button>
+      </div>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: "auto",
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const noopBookMove = () => {};
 
 export default function LibraryWall({
@@ -157,8 +280,40 @@ export default function LibraryWall({
   const [wallSlots, setWallSlots] = useState<WallSlots>(() => [...initialWall.slots]);
   const [wallModalOpen, setWallModalOpen] = useState(false);
   const [slotModalIndex, setSlotModalIndex] = useState<number | null>(null);
+  const [fullscreenViewIndex, setFullscreenViewIndex] = useState<number | null>(null);
+  const narrow = useNarrowLibrary(720);
 
-  const shelfById = useMemo(() => new Map(assignableShelves.map((s) => [s.id, s])), [assignableShelves]);
+  /** Optimistic books + ornaments shared across wall cells, expand, and ⚙️ editor so edits show without reload. */
+  const [sceneSnapByShelfId, setSceneSnapByShelfId] = useState<
+    Record<string, { books: SceneBook[]; ornaments: SceneOrnament[] }>
+  >({});
+
+  const onShelfSceneSnap = useCallback((shelfId: string, books: SceneBook[], ornaments: SceneOrnament[]) => {
+    setSceneSnapByShelfId((prev) => {
+      const cur = prev[shelfId];
+      if (cur && cur.books === books && cur.ornaments === ornaments) return prev;
+      return { ...prev, [shelfId]: { books, ornaments } };
+    });
+  }, []);
+
+  const assignableWithSceneSnaps = useMemo(
+    () =>
+      assignableShelves.map((shelf) => {
+        const snap = sceneSnapByShelfId[shelf.id];
+        if (!snap || !sameBookIdSetAsSnap(shelf, snap)) return shelf;
+        return {
+          ...shelf,
+          books: snap.books as unknown as LibraryShelfBook[],
+          ornaments: snap.ornaments,
+        };
+      }),
+    [assignableShelves, sceneSnapByShelfId]
+  );
+
+  const shelfById = useMemo(
+    () => new Map(assignableWithSceneSnaps.map((s) => [s.id, s])),
+    [assignableWithSceneSnaps]
+  );
 
   const wallSig = `${initialWall.cols},${initialWall.rows},${JSON.stringify(initialWall.slots)}`;
   useEffect(() => {
@@ -181,6 +336,7 @@ export default function LibraryWall({
     if (!visitorPreview) return;
     setWallModalOpen(false);
     setSlotModalIndex(null);
+    setFullscreenViewIndex(null);
   }, [visitorPreview]);
 
   const skipPersist = useRef(true);
@@ -227,29 +383,41 @@ export default function LibraryWall({
   }
 
   const gridCells = wallCols * wallRows;
-  const rowMin = visitorPreview
-    ? "minmax(min(66svh, 820px), auto)"
-    : "minmax(min(62vh, 760px), auto)";
+  /** Desktop: tall rows for the wall aesthetic. Mobile: single column + auto row height so scenes don’t stack huge svh minimums. */
+  const displayCols = narrow ? 1 : wallCols;
+  /** Narrow: each row at least as tall as Expand’s scene min so fillHeight canvas matches fullscreen layout. */
+  const narrowWallSceneRowMin = "minmax(calc(58dvh + 80px), auto)";
+  const gridAutoRows = narrow
+    ? narrowWallSceneRowMin
+    : visitorPreview
+      ? "minmax(min(66svh, 820px), auto)"
+      : "minmax(min(62vh, 760px), auto)";
 
   const modalShelfId = slotModalIndex !== null ? (wallSlots[slotModalIndex] ?? null) : null;
   const modalShelf = modalShelfId ? shelfById.get(modalShelfId) : undefined;
 
+  const fullscreenViewShelfId =
+    fullscreenViewIndex !== null ? (wallSlots[fullscreenViewIndex] ?? null) : null;
+  const fullscreenViewShelf = fullscreenViewShelfId ? shelfById.get(fullscreenViewShelfId) : undefined;
+
   return (
-    <section style={{ marginBottom: 48 }}>
+    <section style={{ marginBottom: 48, width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box" }}>
       {!visitorPreview && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: narrow ? "stretch" : "flex-end", marginBottom: 10 }}>
           <button
             type="button"
             onClick={() => setWallModalOpen(true)}
             style={{
               fontSize: 13,
               fontWeight: 600,
-              padding: "8px 14px",
+              padding: narrow ? "12px 16px" : "8px 14px",
               borderRadius: 10,
               border: `1px solid ${siteAccent}55`,
               background: `${siteAccent}12`,
               color: siteAccent,
               cursor: "pointer",
+              width: narrow ? "100%" : undefined,
+              minHeight: narrow ? 48 : undefined,
             }}
           >
             Wall layout…
@@ -320,68 +488,202 @@ export default function LibraryWall({
         </div>
       </SimpleModal>
 
-      <SimpleModal
-        open={slotModalIndex !== null}
-        title={modalShelf ? `“${modalShelf.name}” on your wall` : "Assign shelf to slot"}
-        onClose={() => setSlotModalIndex(null)}
-      >
-        {slotModalIndex === null ? null : !modalShelf ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <label style={{ fontSize: 13, color: "var(--muted)" }}>
-              Shelf
-              <select
-                value=""
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v) {
-                    setSlot(slotModalIndex, v);
-                    setSlotModalIndex(null);
-                  }
-                }}
+      {slotModalIndex !== null && !narrow && (
+        <SimpleModal
+          open
+          title={modalShelf ? `“${modalShelf.name}” on your wall` : "Assign shelf to slot"}
+          onClose={() => setSlotModalIndex(null)}
+        >
+          {slotModalIndex === null ? null : !modalShelf ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <label style={{ fontSize: 13, color: "var(--muted)" }}>
+                Shelf
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v) {
+                      setSlot(slotModalIndex, v);
+                      setSlotModalIndex(null);
+                    }
+                  }}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    marginTop: 6,
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg)",
+                    color: "var(--text)",
+                    fontSize: 16,
+                  }}
+                >
+                  <option value="">Choose a shelf…</option>
+                  {assignableShelves.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.emoji ?? "📚"} {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          ) : (
+            <SlotShelfEditor
+              shelf={modalShelf}
+              assignableShelves={assignableShelves}
+              siteAccent={siteAccent}
+              onPickShelf={(id) => {
+                if (id === "__clear__") setSlot(slotModalIndex, null);
+                else setSlot(slotModalIndex, id);
+                setSlotModalIndex(null);
+              }}
+              onColourChange={onColourChange}
+              onTierCountChange={onTierCountChange}
+              onClose={() => setSlotModalIndex(null)}
+            />
+          )}
+        </SimpleModal>
+      )}
+
+      {slotModalIndex !== null && narrow && (
+        <LibraryFullscreenSheet
+          open
+          title={modalShelf ? `“${modalShelf.name}” · wall` : "Assign shelf to slot"}
+          onClose={() => setSlotModalIndex(null)}
+        >
+          <div
+            style={{
+              padding: "16px 18px",
+              background: modalShelf ? (modalShelf.bgColour ?? "var(--surface)") : "var(--surface)",
+            }}
+          >
+            {slotModalIndex === null ? null : !modalShelf ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <label style={{ fontSize: 14, color: "var(--muted)" }}>
+                  Shelf
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v) {
+                        setSlot(slotModalIndex, v);
+                        setSlotModalIndex(null);
+                      }
+                    }}
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      marginTop: 8,
+                      padding: "14px 12px",
+                      minHeight: 48,
+                      borderRadius: 12,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      fontSize: 16,
+                    }}
+                  >
+                    <option value="">Choose a shelf…</option>
+                    {assignableShelves.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.emoji ?? "📚"} {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            ) : (
+            <SlotShelfEditor
+              shelf={modalShelf}
+              assignableShelves={assignableShelves}
+              siteAccent={siteAccent}
+              onPickShelf={(id) => {
+                if (id === "__clear__") setSlot(slotModalIndex, null);
+                else setSlot(slotModalIndex, id);
+                setSlotModalIndex(null);
+              }}
+              onColourChange={onColourChange}
+              onTierCountChange={onTierCountChange}
+              onClose={() => setSlotModalIndex(null)}
+            />
+            )}
+          </div>
+          {modalShelf && slotModalIndex !== null ? (
+            <div
+              style={{
+                borderTop: "1px solid var(--border)",
+                padding: "14px 16px 28px",
+                background: modalShelf.bgColour ?? "var(--surface)",
+              }}
+            >
+              <p
                 style={{
-                  display: "block",
-                  width: "100%",
-                  marginTop: 6,
-                  padding: "10px 12px",
-                  borderRadius: 10,
-                  border: "1px solid var(--border)",
-                  background: "var(--bg)",
-                  color: "var(--text)",
-                  fontSize: 14,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "var(--muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  margin: "0 0 12px",
                 }}
               >
-                <option value="">Choose a shelf…</option>
-                {assignableShelves.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.emoji ?? "📚"} {s.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        ) : (
-          <SlotShelfEditor
-            shelf={modalShelf}
-            assignableShelves={assignableShelves}
-            siteAccent={siteAccent}
-            onPickShelf={(id) => {
-              if (id === "__clear__") setSlot(slotModalIndex, null);
-              else setSlot(slotModalIndex, id);
-              setSlotModalIndex(null);
+                Edit scene · lighting & decor
+              </p>
+              <LibraryWallShelfSceneBlock
+                shelf={modalShelf}
+                shelfAccent={modalShelf.accentColour ?? siteAccent}
+                readOnlyScene={visitorPreview}
+                bookMove={visitorPreview ? noopBookMove : onBookMove}
+                onLightingChange={onLightingChange}
+                onSceneSnap={visitorPreview ? undefined : onShelfSceneSnap}
+                compact={false}
+                fillHeight
+              />
+            </div>
+          ) : null}
+        </LibraryFullscreenSheet>
+      )}
+
+      {fullscreenViewIndex !== null && fullscreenViewShelf ? (
+        <LibraryFullscreenSheet
+          open
+          title={`${fullscreenViewShelf.emoji ?? DEFAULT_SHELF_EMOJIS[fullscreenViewShelf.slug] ?? "📚"} ${fullscreenViewShelf.name}`}
+          onClose={() => setFullscreenViewIndex(null)}
+        >
+          <div
+            style={{
+              padding: "12px 16px 24px",
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              width: "100%",
+              maxWidth: "100%",
+              boxSizing: "border-box",
+              background: fullscreenViewShelf.bgColour ?? "var(--surface)",
             }}
-            onColourChange={onColourChange}
-            onTierCountChange={onTierCountChange}
-            onClose={() => setSlotModalIndex(null)}
-          />
-        )}
-      </SimpleModal>
+          >
+            <LibraryWallShelfSceneBlock
+              shelf={fullscreenViewShelf}
+              shelfAccent={fullscreenViewShelf.accentColour ?? siteAccent}
+              readOnlyScene={visitorPreview}
+              bookMove={visitorPreview ? noopBookMove : onBookMove}
+              onLightingChange={onLightingChange}
+              onSceneSnap={visitorPreview ? undefined : onShelfSceneSnap}
+              compact={false}
+              fillHeight
+            />
+          </div>
+        </LibraryFullscreenSheet>
+      ) : null}
 
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: `repeat(${wallCols}, minmax(0, 1fr))`,
-          gridAutoRows: rowMin,
-          gap: 14,
+          gridTemplateColumns: `repeat(${displayCols}, minmax(0, 1fr))`,
+          gridAutoRows: gridAutoRows,
+          gap: narrow ? 10 : 14,
+          width: "100%",
+          minWidth: 0,
         }}
       >
         {Array.from({ length: gridCells }, (_, index) => {
@@ -395,7 +697,7 @@ export default function LibraryWall({
                 style={{
                   border: "2px dashed var(--border)",
                   borderRadius: 16,
-                  minHeight: 280,
+                  minHeight: narrow ? 140 : 280,
                   display: "flex",
                   flexDirection: "column",
                   alignItems: "center",
@@ -435,7 +737,6 @@ export default function LibraryWall({
           const emoji = shelf.emoji ?? DEFAULT_SHELF_EMOJIS[shelf.slug] ?? "📚";
           const shelfAccent = shelf.accentColour ?? siteAccent;
           const shelfBg = shelf.bgColour ?? null;
-          const tiers = Math.max(2, Math.min(5, shelf.sceneTierCount ?? 2));
 
           return (
             <WallShelfCell
@@ -445,18 +746,80 @@ export default function LibraryWall({
               shelfAccent={shelfAccent}
               shelfBg={shelfBg}
               titleColour={shelf.titleColour}
-              tiers={tiers}
               visitorPreview={visitorPreview}
               profileUsername={profileUsername}
               readOnlyScene={visitorPreview}
               bookMove={visitorPreview ? noopBookMove : onBookMove}
-              onOpenSettings={visitorPreview ? undefined : () => setSlotModalIndex(index)}
+              onOpenExpand={() => {
+                setSlotModalIndex(null);
+                setFullscreenViewIndex(index);
+              }}
+              onOpenSettings={
+                visitorPreview
+                  ? undefined
+                  : () => {
+                      setFullscreenViewIndex(null);
+                      setSlotModalIndex(index);
+                    }
+              }
               onLightingChange={onLightingChange}
+              onSceneSnap={visitorPreview ? undefined : onShelfSceneSnap}
             />
           );
         })}
       </div>
     </section>
+  );
+}
+
+function LibraryWallShelfSceneBlock({
+  shelf,
+  shelfAccent,
+  readOnlyScene,
+  bookMove,
+  onLightingChange,
+  onSceneSnap,
+  compact = true,
+  fillHeight = false,
+  wallCellNarrow = false,
+  scaleLayoutToExpandDesignWidth = false,
+}: {
+  shelf: LibraryShelf;
+  shelfAccent: string;
+  readOnlyScene: boolean;
+  bookMove: (workId: string, fromShelfId: string, toShelfId: string, layout?: { xPct: number; yPct: number }) => void;
+  onLightingChange: (shelfId: string, preset: string | null) => void;
+  onSceneSnap?: (shelfId: string, books: SceneBook[], ornaments: SceneOrnament[]) => void;
+  compact?: boolean;
+  fillHeight?: boolean;
+  /** Wall grid on a narrow viewport: short scene, hide edit chrome (use Expand / ⚙️). */
+  wallCellNarrow?: boolean;
+  /** Grid cells only: match Expand layout width then scale to cell (no horizontal squeeze). */
+  scaleLayoutToExpandDesignWidth?: boolean;
+}) {
+  const memoSceneBooks = useMemo(() => shelf.books.map(toSceneBook), [shelf.books]);
+  const tiers = Math.max(2, Math.min(5, shelf.sceneTierCount ?? 2));
+
+  return (
+    <ShelfScene
+      shelfId={shelf.id}
+      shelfAccent={shelfAccent}
+      books={memoSceneBooks}
+      ornaments={shelf.ornaments}
+      lightingPreset={shelf.lightingPreset ?? null}
+      tierCount={tiers}
+      sceneBookDisplay={shelf.sceneBookDisplay ?? null}
+      sceneBookWidthMul={typeof shelf.sceneBookWidthMul === "number" ? shelf.sceneBookWidthMul : 1}
+      sceneBookHeightMul={typeof shelf.sceneBookHeightMul === "number" ? shelf.sceneBookHeightMul : 1}
+      compact={compact}
+      fillHeight={fillHeight}
+      readOnly={readOnlyScene}
+      wallCellNarrow={wallCellNarrow}
+      scaleLayoutToExpandDesignWidth={scaleLayoutToExpandDesignWidth}
+      onLightingChange={(preset) => onLightingChange(shelf.id, preset)}
+      onCrossShelfBookDrop={(workId, fromShelfId, layout) => bookMove(workId, fromShelfId, shelf.id, layout)}
+      onSceneSnap={onSceneSnap}
+    />
   );
 }
 
@@ -639,35 +1002,45 @@ function WallShelfCell({
   shelfAccent,
   shelfBg,
   titleColour,
-  tiers,
   visitorPreview,
   profileUsername,
   readOnlyScene,
   bookMove,
+  onOpenExpand,
   onOpenSettings,
   onLightingChange,
+  onSceneSnap,
 }: {
   shelf: LibraryShelf;
   emoji: string;
   shelfAccent: string;
   shelfBg: string | null;
   titleColour: string | null;
-  tiers: number;
   visitorPreview: boolean;
   profileUsername: string;
   readOnlyScene: boolean;
   bookMove: (workId: string, fromShelfId: string, toShelfId: string, layout?: { xPct: number; yPct: number }) => void;
+  onOpenExpand?: () => void;
   onOpenSettings?: () => void;
   onLightingChange: (shelfId: string, preset: string | null) => void;
+  onSceneSnap?: (shelfId: string, books: SceneBook[], ornaments: SceneOrnament[]) => void;
 }) {
-  const [localBooks, setLocalBooks] = useState(shelf.books);
-  useEffect(() => {
-    setLocalBooks(shelf.books);
-  }, [shelf.books]);
-
-  const memoSceneBooks = useMemo(() => localBooks.map(toSceneBook), [localBooks]);
   const guestHref = `/u/${encodeURIComponent(profileUsername)}/shelves/${encodeURIComponent(shelf.slug)}`;
   const titleStyleColor = titleColour ?? "var(--text)";
+
+  const expandBtnStyle = {
+    flexShrink: 0,
+    minWidth: 44,
+    minHeight: 40,
+    padding: "0 12px",
+    borderRadius: 10,
+    border: "1px solid var(--border)",
+    background: "var(--bg)",
+    fontSize: 12,
+    fontWeight: 700,
+    color: "var(--text)",
+    cursor: "pointer",
+  } as const;
 
   return (
     <div
@@ -699,16 +1072,23 @@ function WallShelfCell({
               {shelf.name}
             </span>
           </div>
-          {shelf.isPublic ? (
-            <Link
-              href={guestHref}
-              style={{ fontSize: 11, fontWeight: 600, color: shelfAccent, textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}
-            >
-              Public page →
-            </Link>
-          ) : (
-            <span style={{ fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>Private</span>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            {onOpenExpand && (
+              <button type="button" onClick={onOpenExpand} aria-label="View shelf full screen" style={expandBtnStyle}>
+                Expand
+              </button>
+            )}
+            {shelf.isPublic ? (
+              <Link
+                href={guestHref}
+                style={{ fontSize: 11, fontWeight: 600, color: shelfAccent, textDecoration: "none", whiteSpace: "nowrap", flexShrink: 0 }}
+              >
+                Public page →
+              </Link>
+            ) : (
+              <span style={{ fontSize: 10, color: "var(--muted)", flexShrink: 0 }}>Private</span>
+            )}
+          </div>
         </div>
       ) : (
         <div
@@ -716,7 +1096,7 @@ function WallShelfCell({
             display: "flex",
             alignItems: "center",
             gap: 8,
-            padding: "6px 10px",
+            padding: "8px 10px",
             borderBottom: "1px solid var(--border)",
             flexShrink: 0,
           }}
@@ -731,42 +1111,59 @@ function WallShelfCell({
               {!shelf.isPublic && <span style={{ marginLeft: 6 }}>· private</span>}
             </div>
           </div>
-          {onOpenSettings && (
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              title="Shelf & wall settings"
-              aria-label="Shelf and wall settings"
-              style={{
-                flexShrink: 0,
-                width: 38,
-                height: 38,
-                borderRadius: 10,
-                border: "1px solid var(--border)",
-                background: "var(--bg)",
-                fontSize: 18,
-                lineHeight: 1,
-                cursor: "pointer",
-              }}
-            >
-              ⚙️
-            </button>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            {onOpenExpand && (
+              <button type="button" onClick={onOpenExpand} aria-label="View shelf full screen" style={expandBtnStyle}>
+                Expand
+              </button>
+            )}
+            {onOpenSettings && (
+              <button
+                type="button"
+                onClick={onOpenSettings}
+                title="Shelf, wall & scene editor"
+                aria-label="Shelf wall and scene editor"
+                style={{
+                  flexShrink: 0,
+                  minWidth: 44,
+                  minHeight: 44,
+                  borderRadius: 10,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  fontSize: 18,
+                  lineHeight: 1,
+                  cursor: "pointer",
+                }}
+              >
+                ⚙️
+              </button>
+            )}
+          </div>
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: visitorPreview ? "0 8px 10px" : "0 8px 10px" }}>
-        <ShelfScene
-          shelfId={shelf.id}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          /* Align with Expand sheet horizontal inset (16px) so scene width matches full editor. */
+          padding: "0 16px 10px",
+        }}
+      >
+        <LibraryWallShelfSceneBlock
+          shelf={shelf}
           shelfAccent={shelfAccent}
-          books={memoSceneBooks}
-          ornaments={shelf.ornaments}
-          lightingPreset={shelf.lightingPreset ?? null}
-          tierCount={tiers}
-          compact
-          readOnly={readOnlyScene}
-          onLightingChange={(preset) => onLightingChange(shelf.id, preset)}
-          onCrossShelfBookDrop={(workId, fromShelfId, layout) => bookMove(workId, fromShelfId, shelf.id, layout)}
+          readOnlyScene={readOnlyScene}
+          bookMove={bookMove}
+          onLightingChange={onLightingChange}
+          onSceneSnap={onSceneSnap}
+          /* Same as Expand / fullscreen: non-compact + fillHeight; wallCellNarrow off so chrome & layout match. */
+          compact={false}
+          fillHeight
+          wallCellNarrow={false}
+          scaleLayoutToExpandDesignWidth
         />
       </div>
     </div>

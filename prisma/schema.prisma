@@ -33,6 +33,15 @@ enum EditionFormat {
   other
 }
 
+/** How the user consumed the book for this read-through (may differ from edition format). */
+enum ReadingMedium {
+  paperback
+  hardcover
+  ebook
+  audiobook
+  other
+}
+
 enum ClubMemberRole {
   owner
   moderator
@@ -257,6 +266,7 @@ model Work {
   collectionBooks              CollectionBook[]
   clubSchedules   ClubReadingSchedule[]
   feedEntries     ActivityFeed[]
+  workSeries      WorkSeries[]
 
   @@map("works")
 }
@@ -333,6 +343,33 @@ model WorkGenre {
   @@map("work_genres")
 }
 
+/** Open Library–backed series (e.g. Harry Potter) when present on the work record. */
+model Series {
+  id            String       @id @default(uuid())
+  openLibraryId String       @unique @map("open_library_id") @db.VarChar(24)
+  name          String       @db.VarChar(300)
+  slug          String       @unique @db.VarChar(160)
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  workSeries WorkSeries[]
+
+  @@map("book_series")
+}
+
+model WorkSeries {
+  workId   String  @map("work_id")
+  seriesId String  @map("series_id")
+  /** Reading order hint from Open Library (e.g. "7"). */
+  position String? @db.VarChar(32)
+
+  work   Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+  series Series @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  @@id([workId, seriesId])
+  @@map("work_series")
+}
+
 // ---------------------------------------------------------------------------
 // Shelves & Reading
 // ---------------------------------------------------------------------------
@@ -353,6 +390,10 @@ model Shelf {
   lightingPreset  String? @map("lighting_preset") @db.VarChar(24)
   /** 2–5 horizontal tiers (planks) in the 2D shelf scene. */
   sceneTierCount  Int      @default(2) @map("scene_tier_count")
+  /** spine | cover — cover shows full front, no spine title strip. */
+  sceneBookDisplay    String   @default("spine") @map("scene_book_display") @db.VarChar(12)
+  sceneBookWidthMul   Float    @default(1) @map("scene_book_width_mul")
+  sceneBookHeightMul  Float    @default(1) @map("scene_book_height_mul")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
@@ -374,6 +415,10 @@ model ShelfBook {
   layoutXPct  Float    @default(50) @map("layout_x_pct")
   layoutYPct  Float    @default(18) @map("layout_y_pct")
   layoutZ     Int      @default(5) @map("layout_z")
+  /** null = use shelf default sceneBookDisplay */
+  sceneDisplay    String? @map("scene_display") @db.VarChar(12)
+  sceneWidthMul   Float?  @map("scene_width_mul")
+  sceneHeightMul  Float?  @map("scene_height_mul")
 
   shelf   Shelf    @relation(fields: [shelfId], references: [id], onDelete: Cascade)
   work    Work     @relation(fields: [workId], references: [id], onDelete: Cascade)
@@ -404,18 +449,42 @@ model ReadingSession {
   userId             String   @map("user_id")
   workId             String   @map("work_id")
   editionId          String?  @map("edition_id")
+  /** Last activity day (streaks / “logged today”). */
   date               DateTime @db.Date
+  /** Inclusive start of this read-through (re-reads = new row with higher readCycle). */
+  periodStart        DateTime @map("period_start") @db.Date
+  /** Inclusive end; null = still reading. */
+  periodEnd          DateTime? @map("period_end") @db.Date
+
   pagesRead          Int      @default(0) @map("pages_read")
   pagesTotal         Int?     @map("pages_total")
+  startPage          Int?     @map("start_page")
+  endPage            Int?     @map("end_page")
   percentComplete    Float?   @map("percent_complete")
   notes              String?  @db.Text
   readingTimeMinutes Int?     @map("reading_time_minutes")
+
+  medium             ReadingMedium @default(paperback)
+  /** e.g. “Kindle”, “Libby”, “hardcover book club copy”. */
+  mediumNote         String?       @db.VarChar(120) @map("medium_note")
+  /** JSON array: { id?, text, page?, loc?, note? }[] */
+  highlights         Json?
+
+  /** 1 = first time through this work, 2+ = re-read counter for this user. */
+  readCycle          Int      @default(1) @map("read_cycle")
+
+  feedPostId         String?  @unique @map("feed_post_id")
+  feedPost           FeedPost? @relation(fields: [feedPostId], references: [id], onDelete: SetNull)
+
   createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   work               Work     @relation(fields: [workId], references: [id], onDelete: Cascade)
   edition            Edition? @relation(fields: [editionId], references: [id])
 
+  @@index([userId, periodStart])
+  @@index([userId, workId])
   @@map("reading_sessions")
 }
 
@@ -618,6 +687,7 @@ model FeedPost {
   user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   votes    FeedPostVote[]
   comments FeedPostComment[]
+  linkedReadingSession ReadingSession?
 
   @@map("feed_posts")
 }

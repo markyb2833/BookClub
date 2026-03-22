@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getLatestReadingMetaByWorkIds } from "@/lib/reading/workReadingProgress";
 import { getWorksCommunityStatsMap, mergeWorkCommunityStats } from "@/lib/social/workCommunityStats";
 import { redirect } from "next/navigation";
 import ShelfDashboard from "@/components/shelves/ShelfDashboard";
@@ -91,13 +92,22 @@ export default async function ShelvesPage() {
   const libraryWall = { cols, rows, slots };
 
   const allWorkIds = user.shelves.flatMap((s) => s.books.map((b) => b.work.id));
-  const commMap = await getWorksCommunityStatsMap(prisma, allWorkIds);
+  const [commMap, readingMeta] = await Promise.all([
+    getWorksCommunityStatsMap(prisma, allWorkIds),
+    getLatestReadingMetaByWorkIds(prisma, session.user.id, allWorkIds),
+  ]);
   const shelvesWithCommunity = user.shelves.map((shelf) => ({
     ...shelf,
-    books: shelf.books.map((b) => ({
-      ...b,
-      work: mergeWorkCommunityStats(b.work, commMap),
-    })),
+    books: shelf.books.map((b) => {
+      const meta = readingMeta.get(b.work.id);
+      return {
+        ...b,
+        work: {
+          ...mergeWorkCommunityStats(b.work, commMap),
+          readingProgressPercent: meta?.progressPercent ?? null,
+        },
+      };
+    }),
   }));
 
   return (

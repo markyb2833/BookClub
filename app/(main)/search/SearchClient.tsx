@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import ReaderCommunitySignals from "@/components/books/ReaderCommunitySignals";
+import ShelfPopover from "@/components/shelves/ShelfPopover";
 import { ZERO_COMMUNITY_STATS, type WorkCommunityStats } from "@/lib/social/workCommunityStats";
 
 interface Hit {
@@ -22,52 +23,66 @@ interface Hit {
 
 function SearchResult({ hit, community }: { hit: Hit; community: WorkCommunityStats }) {
   return (
-    <Link
-      href={`/books/${hit.id}`}
-      className="search-result-card"
-      style={{ display: "flex", gap: 16, background: "var(--surface)", borderRadius: 12, border: "1px solid var(--border)", padding: 16, textDecoration: "none", transition: "box-shadow 0.15s" }}
-    >
-      <style>{`.search-result-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.1); }`}</style>
-      <div style={{ width: 72, height: 108, borderRadius: 6, overflow: "hidden", flexShrink: 0, background: "var(--border)", position: "relative" }}>
-        {hit.cover_url ? (
-          <Image src={hit.cover_url} alt={hit.title} fill style={{ objectFit: "cover" }} sizes="72px" />
-        ) : (
-          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 8 }}>
-            <span style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", lineHeight: 1.3 }}>{hit.title.slice(0, 24)}</span>
-          </div>
-        )}
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0, flex: 1 }}>
-        <div>
-          <div style={{ fontWeight: 600, color: "var(--text)", fontSize: 15, lineHeight: 1.3 }}>{hit.title}</div>
-          {hit.subtitle && <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 1 }}>{hit.subtitle}</div>}
+    <div style={{ position: "relative" }}>
+      <Link
+        href={`/books/${hit.id}`}
+        className="search-result-card"
+        style={{
+          display: "flex",
+          gap: 16,
+          background: "var(--surface)",
+          borderRadius: 12,
+          border: "1px solid var(--border)",
+          padding: "16px 52px 16px 16px",
+          textDecoration: "none",
+          transition: "box-shadow 0.15s",
+        }}
+      >
+        <style>{`.search-result-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.1); }`}</style>
+        <div style={{ width: 72, height: 108, borderRadius: 6, overflow: "hidden", flexShrink: 0, background: "var(--border)", position: "relative" }}>
+          {hit.cover_url ? (
+            <Image src={hit.cover_url} alt={hit.title} fill style={{ objectFit: "cover" }} sizes="72px" />
+          ) : (
+            <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 8 }}>
+              <span style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", lineHeight: 1.3 }}>{hit.title.slice(0, 24)}</span>
+            </div>
+          )}
         </div>
-        <div style={{ fontSize: 13, color: "var(--muted)" }}>
-          {hit.authors?.join(", ")}
-          {hit.first_published && <span> · {hit.first_published}</span>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0, flex: 1 }}>
+          <div>
+            <div style={{ fontWeight: 600, color: "var(--text)", fontSize: 15, lineHeight: 1.3 }}>{hit.title}</div>
+            {hit.subtitle && <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 1 }}>{hit.subtitle}</div>}
+          </div>
+          <div style={{ fontSize: 13, color: "var(--muted)" }}>
+            {hit.authors?.join(", ")}
+            {hit.first_published && <span> · {hit.first_published}</span>}
+          </div>
+          <ReaderCommunitySignals
+            compact
+            community={community}
+            openLibraryRating={hit.average_rating ?? 0}
+            openLibraryRatingsCount={hit.ratings_count ?? 0}
+          />
+          {hit.genres && hit.genres.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 2 }}>
+              {hit.genres.slice(0, 3).map((g) => (
+                <span key={g} style={{ fontSize: 11, background: "var(--bg)", color: "var(--muted)", borderRadius: 999, padding: "2px 10px", border: "1px solid var(--border)" }}>
+                  {g}
+                </span>
+              ))}
+            </div>
+          )}
+          {hit.description && (
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+              {hit.description}
+            </div>
+          )}
         </div>
-        <ReaderCommunitySignals
-          compact
-          community={community}
-          openLibraryRating={hit.average_rating ?? 0}
-          openLibraryRatingsCount={hit.ratings_count ?? 0}
-        />
-        {hit.genres && hit.genres.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 2 }}>
-            {hit.genres.slice(0, 3).map((g) => (
-              <span key={g} style={{ fontSize: 11, background: "var(--bg)", color: "var(--muted)", borderRadius: 999, padding: "2px 10px", border: "1px solid var(--border)" }}>
-                {g}
-              </span>
-            ))}
-          </div>
-        )}
-        {hit.description && (
-          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-            {hit.description}
-          </div>
-        )}
+      </Link>
+      <div style={{ position: "absolute", top: 12, right: 12, zIndex: 2 }}>
+        <ShelfPopover workId={hit.id} />
       </div>
-    </Link>
+    </div>
   );
 }
 

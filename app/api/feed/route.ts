@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { progressPercentFromSessionSnapshot } from "@/lib/reading/workReadingProgress";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { loadAttachmentsGrouped } from "@/lib/social/postAttachments";
@@ -18,6 +19,23 @@ export async function GET(req: NextRequest) {
   const valid: Sort[] = ["new", "top", "trending"];
   const s = valid.includes(sort) ? sort : "new";
 
+  const scopeRaw = req.nextUrl.searchParams.get("scope") ?? "all";
+  const scope = scopeRaw === "following" ? "following" : "all";
+
+  let actorIds: string[] | null = null;
+  if (scope === "following") {
+    if (!viewerId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const follows = await prisma.follow.findMany({
+      where: { followerId: viewerId },
+      select: { followingId: true },
+    });
+    actorIds = Array.from(new Set([viewerId, ...follows.map((f) => f.followingId)]));
+  }
+
+  const actorFilter = actorIds ? { userId: { in: actorIds } } : {};
+
   const weekAgo = new Date();
   weekAgo.setDate(weekAgo.getDate() - 7);
 
@@ -32,7 +50,7 @@ export async function GET(req: NextRequest) {
 
   const [reviews, recommendations, feedPosts] = await Promise.all([
     prisma.review.findMany({
-      where: reviewWhere,
+      where: { ...reviewWhere, ...actorFilter },
       take: 120,
       orderBy: { createdAt: "desc" },
       include: {
@@ -41,7 +59,7 @@ export async function GET(req: NextRequest) {
       },
     }),
     prisma.bookRecommendation.findMany({
-      where: recWhere,
+      where: { ...recWhere, ...actorFilter },
       take: 120,
       orderBy: { createdAt: "desc" },
       include: {
@@ -51,7 +69,7 @@ export async function GET(req: NextRequest) {
       },
     }),
     prisma.feedPost.findMany({
-      where: feedPostWhere,
+      where: { ...feedPostWhere, ...actorFilter },
       take: 120,
       orderBy: { createdAt: "desc" },
       include: {
@@ -83,7 +101,17 @@ export async function GET(req: NextRequest) {
         createdAt: string;
         score: number;
         myVote: number;
-        feedPost: (typeof feedPosts)[0] & { attachments: unknown[] };
+        feedPost: (typeof feedPosts)[0] & {
+          attachments: unknown[];
+          readingLog?: {
+            sessionId: string;
+            readCycle: number;
+            medium: string;
+            periodStart: string;
+            periodEnd: string | null;
+            work: { id: string; title: string; coverUrl: string | null };
+          };
+        };
       };
 
   const reviewAtt = await loadAttachmentsGrouped(
@@ -100,6 +128,27 @@ export async function GET(req: NextRequest) {
     prisma,
     PostAttachmentParent.feed_post,
     feedPosts.map((p) => p.id),
+  );
+
+  const readingSessionsForPosts = await prisma.readingSession.findMany({
+    where: { feedPostId: { in: feedPosts.map((p) => p.id) } },
+    select: {
+      id: true,
+      feedPostId: true,
+      readCycle: true,
+      medium: true,
+      periodStart: true,
+      periodEnd: true,
+      pagesRead: true,
+      readingTimeMinutes: true,
+      percentComplete: true,
+      endPage: true,
+      pagesTotal: true,
+      work: { select: { id: true, title: true, coverUrl: true } },
+    },
+  });
+  const readingByFeedPostId = new Map(
+    readingSessionsForPosts.filter((r) => r.feedPostId).map((r) => [r.feedPostId!, r]),
   );
 
   const [rVotes, recVotes, fpVotes] = viewerId
@@ -146,17 +195,33 @@ export async function GET(req: NextRequest) {
         attachments: recAtt.get(recommendation.id) ?? [],
       },
     })),
-    ...feedPosts.map((feedPost) => ({
-      kind: "feed_post" as const,
-      id: feedPost.id,
-      createdAt: feedPost.createdAt.toISOString(),
-      score: net(feedPost.upvotesCount, feedPost.downvotesCount),
-      myVote: fpVoteMap.get(feedPost.id) ?? 0,
-      feedPost: {
-        ...feedPost,
-        attachments: fpAtt.get(feedPost.id) ?? [],
-      },
-    })),
+    ...feedPosts.map((feedPost) => {
+      const rs = readingByFeedPostId.get(feedPost.id);
+      return {
+        kind: "feed_post" as const,
+        id: feedPost.id,
+        createdAt: feedPost.createdAt.toISOString(),
+        score: net(feedPost.upvotesCount, feedPost.downvotesCount),
+        myVote: fpVoteMap.get(feedPost.id) ?? 0,
+        feedPost: {
+          ...feedPost,
+          attachments: fpAtt.get(feedPost.id) ?? [],
+          readingLog: rs
+            ? {
+                sessionId: rs.id,
+                readCycle: rs.readCycle,
+                medium: rs.medium,
+                periodStart: rs.periodStart.toISOString().slice(0, 10),
+                periodEnd: rs.periodEnd ? rs.periodEnd.toISOString().slice(0, 10) : null,
+                pagesRead: rs.pagesRead,
+                readingTimeMinutes: rs.readingTimeMinutes,
+                progressPercent: progressPercentFromSessionSnapshot(rs),
+                work: rs.work,
+              }
+            : undefined,
+        },
+      };
+    }),
   ];
 
   if (s === "new") {
@@ -168,5 +233,14 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ sort: s, items: items.slice(0, 60) });
+  return NextResponse.json({
+    sort: s,
+    scope,
+    items: items.slice(0, 60),
+    ...(scope === "following" && viewerId
+      ? {
+          followingCount: actorIds ? Math.max(0, actorIds.length - 1) : 0,
+        }
+      : {}),
+  });
 }

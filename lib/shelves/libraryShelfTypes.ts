@@ -12,6 +12,8 @@ export interface LibraryWork {
   communityRatingAvg?: number;
   communityReviewCount?: number;
   recommendationsReceivedCount?: number;
+  /** From latest reading session for this user; null if none or not derivable. */
+  readingProgressPercent?: number | null;
   workAuthors: { author: LibraryWorkAuthor }[];
 }
 export interface LibraryShelfBook {
@@ -20,6 +22,10 @@ export interface LibraryShelfBook {
   layoutXPct?: number;
   layoutYPct?: number;
   layoutZ?: number;
+  /** null/undefined = inherit shelf `sceneBookDisplay` */
+  sceneDisplay?: string | null;
+  sceneWidthMul?: number | null;
+  sceneHeightMul?: number | null;
 }
 export interface LibraryShelfOrnament {
   id: string;
@@ -42,6 +48,10 @@ export interface LibraryShelf {
   titleColour: string | null;
   lightingPreset: string | null;
   sceneTierCount: number;
+  /** spine (narrow) or cover (2:3 portrait block). */
+  sceneBookDisplay?: string | null;
+  sceneBookWidthMul?: number | null;
+  sceneBookHeightMul?: number | null;
   books: LibraryShelfBook[];
   ornaments: LibraryShelfOrnament[];
   _count: { books: number };

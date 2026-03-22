@@ -57,3 +57,19 @@ main {
 .shelf-fairy-bulb {
   animation: shelf-fairy-twinkle 2.5s ease-in-out infinite;
 }
+
+/* Discover — reading-log cards on narrow viewports */
+@media (max-width: 480px) {
+  .feed-reading-log-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .feed-reading-log-card .feed-reading-cover {
+    align-self: center;
+  }
+}
+@media (max-width: 380px) {
+  .feed-reading-meta {
+    grid-template-columns: 1fr !important;
+  }
+}

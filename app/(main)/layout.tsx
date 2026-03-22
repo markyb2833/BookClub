@@ -23,7 +23,14 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
       }}
         className="md-main"
       >
-        <style>{`@media (min-width: 768px) { .md-main { margin-left: 220px !important; padding-bottom: 0 !important; } }`}</style>
+        <style>{`
+          @media (max-width: 767px) {
+            .md-main { min-width: 0; overflow-x: clip; max-width: 100%; }
+          }
+          @media (min-width: 768px) {
+            .md-main { margin-left: 220px !important; padding-bottom: 0 !important; }
+          }
+        `}</style>
         {children}
       </main>
     </div>

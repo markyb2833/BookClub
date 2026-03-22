@@ -1,7 +1,9 @@
 "use client";
 
 import { useTheme } from "@/components/ThemeProvider";
-import { useCallback, useEffect, useRef, useState } from "react";
+import ChatSharePicker, { type ChatSharePickerHandle, type ChatSharePickerMode } from "@/components/social/ChatSharePicker";
+import { parseChatTrigger } from "@/lib/social/parseChatTrigger";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MESSAGE_EMOJI_GRID } from "./messageEmojis";
 
 type GifHit = { id: string; previewUrl: string; url: string };
@@ -35,13 +37,132 @@ export default function MessageComposer({
   const { settings } = useTheme();
   const accent = settings.accentColour;
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const sharePickerRef = useRef<ChatSharePickerHandle>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [gifOpen, setGifOpen] = useState(false);
   const [gifQ, setGifQ] = useState("");
   const [gifHits, setGifHits] = useState<GifHit[]>([]);
   const [gifLoading, setGifLoading] = useState(false);
   const [gifDisabled, setGifDisabled] = useState(false);
-  const popRef = useRef<HTMLDivElement>(null);
+
+  const [cursor, setCursor] = useState(0);
+  const [shareMenuOpen, setShareMenuOpen] = useState(false);
+  const [shareMenuTab, setShareMenuTab] = useState<"books" | "authors" | "people">("books");
+  const [shareMenuQuery, setShareMenuQuery] = useState("");
+  const [userShelfStep, setUserShelfStep] = useState<{ username: string; displayName: string | null } | null>(null);
+  const [frozenReplace, setFrozenReplace] = useState<{ start: number; end: number } | null>(null);
+  const [inlinePickerDismissed, setInlinePickerDismissed] = useState(false);
+
+  const trigger = useMemo(() => parseChatTrigger(value, cursor), [value, cursor]);
+  const triggerSig = trigger ? `${trigger.kind}:${trigger.start}:${trigger.query}` : "";
+
+  useEffect(() => {
+    setInlinePickerDismissed(false);
+  }, [triggerSig]);
+
+  const valueRef = useRef(value);
+  const cursorRef = useRef(cursor);
+  const shareMenuOpenRef = useRef(shareMenuOpen);
+  const userShelfStepRef = useRef(userShelfStep);
+  useEffect(() => {
+    valueRef.current = value;
+    cursorRef.current = cursor;
+  }, [value, cursor]);
+  useEffect(() => {
+    shareMenuOpenRef.current = shareMenuOpen;
+  }, [shareMenuOpen]);
+  useEffect(() => {
+    userShelfStepRef.current = userShelfStep;
+  }, [userShelfStep]);
+
+  const closeSharePanel = useCallback(() => {
+    setShareMenuOpen(false);
+    setUserShelfStep(null);
+    setFrozenReplace(null);
+    setShareMenuQuery("");
+  }, []);
+
+  const onPickerClose = useCallback(() => {
+    const hadMenu = shareMenuOpenRef.current;
+    closeSharePanel();
+    if (!hadMenu) setInlinePickerDismissed(true);
+  }, [closeSharePanel]);
+
+  const inlineTriggerPanel =
+    trigger !== null && !shareMenuOpen && !inlinePickerDismissed && userShelfStep === null;
+
+  const sharePanelOpen = shareMenuOpen || userShelfStep !== null || inlineTriggerPanel;
+
+  const pickerMode: ChatSharePickerMode | null = useMemo(() => {
+    if (!sharePanelOpen) return null;
+    if (userShelfStep) {
+      return {
+        kind: "user_shelves",
+        username: userShelfStep.username,
+        displayName: userShelfStep.displayName,
+      };
+    }
+    if (shareMenuOpen) {
+      return { kind: "menu", tab: shareMenuTab, query: shareMenuQuery };
+    }
+    if (trigger?.kind === "at") return { kind: "at", query: trigger.query };
+    if (trigger?.kind === "slash") return { kind: "slash", query: trigger.query };
+    return null;
+  }, [sharePanelOpen, userShelfStep, shareMenuOpen, shareMenuTab, shareMenuQuery, trigger]);
+
+  const commitShareHref = useCallback(
+    (href: string) => {
+      const ins = href.trim() + " ";
+      const ta = taRef.current;
+
+      if (frozenReplace) {
+        const next = value.slice(0, frozenReplace.start) + ins + value.slice(frozenReplace.end);
+        onChange(next);
+        const pos = frozenReplace.start + ins.length;
+        closeSharePanel();
+        requestAnimationFrame(() => {
+          ta?.focus();
+          ta?.setSelectionRange(pos, pos);
+        });
+        return;
+      }
+
+      if (!shareMenuOpen && trigger) {
+        const next = value.slice(0, trigger.start) + ins + value.slice(cursor);
+        onChange(next);
+        const pos = trigger.start + ins.length;
+        closeSharePanel();
+        requestAnimationFrame(() => {
+          ta?.focus();
+          ta?.setSelectionRange(pos, pos);
+        });
+        return;
+      }
+
+      if (ta) {
+        const pad =
+          ta.value.length > 0 && !ta.value.endsWith(" ") && !ta.value.endsWith("\n") ? " " : "";
+        const next = insertAtCursor(ta, pad + ins);
+        onChange(next);
+      }
+      closeSharePanel();
+    },
+    [frozenReplace, value, onChange, closeSharePanel, shareMenuOpen, trigger, cursor],
+  );
+
+  const onUserStep = useCallback(
+    (u: { username: string; displayName: string | null }) => {
+      if (!shareMenuOpen && trigger?.kind === "slash") {
+        setFrozenReplace({ start: trigger.start, end: cursor });
+      } else {
+        setFrozenReplace(null);
+      }
+      setUserShelfStep(u);
+    },
+    [shareMenuOpen, trigger, cursor],
+  );
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -49,10 +170,20 @@ export default function MessageComposer({
       if (popRef.current?.contains(t)) return;
       setEmojiOpen(false);
       setGifOpen(false);
+      const tr = parseChatTrigger(valueRef.current, cursorRef.current);
+      if (shareMenuOpenRef.current || userShelfStepRef.current) {
+        closeSharePanel();
+        return;
+      }
+      if (tr) {
+        setInlinePickerDismissed(true);
+        return;
+      }
+      closeSharePanel();
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  }, [closeSharePanel]);
 
   const runGifSearch = useCallback(async (q: string) => {
     setGifLoading(true);
@@ -95,11 +226,12 @@ export default function MessageComposer({
     setGifOpen(false);
   }
 
-  const pickerMaxHeight = gifOpen ? 320 : 220;
+  const pickerMaxHeight = gifOpen ? 320 : sharePanelOpen ? 380 : 220;
+  const showFloatingPicker = emojiOpen || gifOpen || (sharePanelOpen && pickerMode !== null);
 
   return (
     <div ref={popRef} style={{ display: "flex", flexDirection: "column", gap: 8, flexShrink: 0, position: "relative" }}>
-      {(emojiOpen || gifOpen) && (
+      {showFloatingPicker && (
         <div
           style={{
             position: "absolute",
@@ -120,6 +252,66 @@ export default function MessageComposer({
             flexDirection: "column",
           }}
         >
+          {sharePanelOpen && pickerMode && (
+            <>
+              {shareMenuOpen && !userShelfStep && (
+                <div style={{ padding: "8px 10px 0", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+                    {(["books", "authors", "people"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setShareMenuTab(tab)}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: shareMenuTab === tab ? `1px solid ${accent}` : "1px solid var(--border)",
+                          background: shareMenuTab === tab ? `${accent}18` : "var(--bg)",
+                          color: shareMenuTab === tab ? accent : "var(--muted)",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    value={shareMenuQuery}
+                    onChange={(e) => setShareMenuQuery(e.target.value)}
+                    placeholder={
+                      shareMenuTab === "books"
+                        ? "Search books…"
+                        : shareMenuTab === "authors"
+                          ? "Search authors…"
+                          : "Search people…"
+                    }
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      marginBottom: 8,
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      padding: "8px 10px",
+                      fontSize: 13,
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                    }}
+                  />
+                </div>
+              )}
+              <ChatSharePicker
+                ref={sharePickerRef}
+                mode={pickerMode}
+                onCommit={commitShareHref}
+                onUserStep={onUserStep}
+                onBackFromUser={() => setUserShelfStep(null)}
+                onClose={onPickerClose}
+              />
+            </>
+          )}
           {emojiOpen && (
             <div
               style={{
@@ -249,6 +441,7 @@ export default function MessageComposer({
             title="Emoji"
             onClick={() => {
               setGifOpen(false);
+              closeSharePanel();
               setEmojiOpen((o) => !o);
             }}
             style={{
@@ -270,6 +463,7 @@ export default function MessageComposer({
             title="GIF"
             onClick={() => {
               setEmojiOpen(false);
+              closeSharePanel();
               setGifOpen((o) => !o);
               if (!gifOpen) void runGifSearch(gifQ || "book");
             }}
@@ -287,13 +481,53 @@ export default function MessageComposer({
           >
             GIF
           </button>
+          <button
+            type="button"
+            disabled={disabled}
+            title="Share book, author, or profile link"
+            onClick={() => {
+              setEmojiOpen(false);
+              setGifOpen(false);
+              setUserShelfStep(null);
+              setFrozenReplace(null);
+              setShareMenuOpen((o) => {
+                const next = !o;
+                if (next) {
+                  setShareMenuTab("books");
+                  setShareMenuQuery("");
+                }
+                return next;
+              });
+            }}
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              border: shareMenuOpen ? `2px solid ${accent}` : "1px solid var(--border)",
+              background: "var(--bg)",
+              fontSize: 18,
+              cursor: disabled ? "not-allowed" : "pointer",
+              lineHeight: 1,
+            }}
+          >
+            🔗
+          </button>
         </div>
         <textarea
           ref={taRef}
           value={value}
           disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            onChange(e.target.value);
+            setCursor(e.target.selectionStart);
+          }}
+          onSelect={(e) => setCursor(e.currentTarget.selectionStart)}
+          onClick={(e) => setCursor(e.currentTarget.selectionStart)}
+          onKeyUp={(e) => setCursor(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
+            if (sharePanelOpen && pickerMode && sharePickerRef.current?.handleKeyDown(e)) {
+              return;
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               onSend();

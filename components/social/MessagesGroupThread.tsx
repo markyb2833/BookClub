@@ -173,7 +173,7 @@ export default function MessagesGroupThread({
         value={text}
         onChange={setText}
         onSend={() => void send()}
-        placeholder="Message the group…"
+        placeholder="Message…  @ book or author  ·  /user  ·  🔗"
         disabled={!!error && error.includes("not in this group")}
       />
     </div>

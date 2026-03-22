@@ -19,6 +19,7 @@ interface Work {
   communityRatingAvg?: number;
   communityReviewCount?: number;
   recommendationsReceivedCount?: number;
+  readingProgressPercent?: number | null;
   workAuthors: { author: Author }[];
 }
 interface ShelfBook {
@@ -27,6 +28,9 @@ interface ShelfBook {
   layoutXPct?: number;
   layoutYPct?: number;
   layoutZ?: number;
+  sceneDisplay?: string | null;
+  sceneWidthMul?: number | null;
+  sceneHeightMul?: number | null;
 }
 interface ShelfOrnamentRow {
   id: string;
@@ -43,6 +47,9 @@ interface Shelf {
   bgColour: string | null; accentColour: string | null; titleColour: string | null;
   lightingPreset: string | null;
   sceneTierCount: number;
+  sceneBookDisplay?: string | null;
+  sceneBookWidthMul?: number | null;
+  sceneBookHeightMul?: number | null;
   books: ShelfBook[];
   ornaments: ShelfOrnamentRow[];
   _count: { books: number };
@@ -56,7 +63,7 @@ function CurrentlyReadingCard({ book }: { book: ShelfBook }) {
   return (
     <Link
       href={`/books/${book.work.id}`}
-      style={{ display: "flex", flexDirection: "column", gap: 10, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: 16, textDecoration: "none", width: 200, flexShrink: 0, transition: "box-shadow 0.15s, transform 0.15s" }}
+      style={{ display: "flex", flexDirection: "column", gap: 10, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: 16, textDecoration: "none", width: "min(200px, 82vw)", flexShrink: 0, boxSizing: "border-box", transition: "box-shadow 0.15s, transform 0.15s" }}
       onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 24px rgba(0,0,0,0.12)"; (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)"; }}
       onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "none"; (e.currentTarget as HTMLElement).style.transform = "none"; }}
     >
@@ -72,9 +79,18 @@ function CurrentlyReadingCard({ book }: { book: ShelfBook }) {
       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", lineHeight: 1.3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
         {book.work.title}
       </div>
-      <div style={{ height: 4, borderRadius: 99, background: "var(--border)", overflow: "hidden" }}>
-        <div style={{ height: "100%", width: "40%", background: settings.accentColour, borderRadius: 99 }} />
-      </div>
+      {typeof book.work.readingProgressPercent === "number" && Number.isFinite(book.work.readingProgressPercent) ? (
+        <div style={{ height: 4, borderRadius: 99, background: "var(--border)", overflow: "hidden" }}>
+          <div
+            style={{
+              height: "100%",
+              width: `${Math.min(100, Math.max(0, book.work.readingProgressPercent))}%`,
+              background: settings.accentColour,
+              borderRadius: 99,
+            }}
+          />
+        </div>
+      ) : null}
     </Link>
   );
 }
@@ -124,6 +140,9 @@ export default function ShelfDashboard({ shelves: initial, username, displayName
         accentColour: null,
         titleColour: null,
         sceneTierCount: typeof shelf.sceneTierCount === "number" ? shelf.sceneTierCount : 2,
+        sceneBookDisplay: "spine",
+        sceneBookWidthMul: 1,
+        sceneBookHeightMul: 1,
       }]);
       setShowCreate(false); setNewName(""); setNewEmoji("📚"); setNewDesc("");
       router.refresh();
@@ -186,12 +205,21 @@ export default function ShelfDashboard({ shelves: initial, username, displayName
   }, []);
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: "40px 24px 80px" }}>
+    <div
+      style={{
+        maxWidth: 1200,
+        margin: "0 auto",
+        padding: "clamp(20px, 4vw, 40px) clamp(14px, 4vw, 24px) 80px",
+        width: "100%",
+        minWidth: 0,
+        boxSizing: "border-box",
+      }}
+    >
 
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 40, flexWrap: "wrap", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "clamp(24px, 4vw, 40px)", flexWrap: "wrap", gap: 16 }}>
         <div>
-          <h1 style={{ fontSize: 28, fontWeight: 800, color: "var(--text)", margin: 0, letterSpacing: "-0.5px" }}>
+          <h1 style={{ fontSize: "clamp(22px, 5vw, 28px)", fontWeight: 800, color: "var(--text)", margin: 0, letterSpacing: "-0.5px" }}>
             {displayName ?? username}&apos;s Library
           </h1>
           <p style={{ fontSize: 14, color: "var(--muted)", marginTop: 6 }}>
